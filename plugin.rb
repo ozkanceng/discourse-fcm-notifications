@@ -19,43 +19,54 @@ module ::DiscourseFcmNotifications
 end
 
 require_relative "lib/discourse_fcm_notifications/engine"
-# Jobs::Base is not eager-loaded by newer Discourse versions. Load it before
-# loading plugin job classes so Zeitwerk does not evaluate them with an
-# unresolved superclass.
-require_dependency "jobs/base"
-require_dependency File.expand_path("app/jobs/weekly_smart_recap", __dir__)
 
 after_initialize do
   User.register_custom_field_type(DiscourseFcmNotifications::PLUGIN_NAME, :json)
   allow_staff_user_custom_field DiscourseFcmNotifications::PLUGIN_NAME
 
-  DiscourseEvent.on(:push_notification) do |user, payload|
-    if SiteSetting.fcm_notifications_enabled?
-      token = user&.custom_fields&.[](DiscourseFcmNotifications::PLUGIN_NAME)
-      next if token.blank?
-      Jobs.enqueue(:send_fcm_notifications, user_id: user.id, payload: payload)
-    end
+  # Discourse does not guarantee that Jobs::Base is loaded while plugin.rb is
+  # being evaluated. Defer both plugin job files until the application has
+  # finished initialization, and fail closed if the job API is unavailable.
+  jobs_ready = begin
+    require_dependency "jobs/base" unless defined?(::Jobs::Base)
+    require_dependency File.expand_path("app/jobs/weekly_smart_recap", __dir__)
+    defined?(::Jobs::Base) && defined?(::Jobs::WeeklySmartRecap)
+  rescue StandardError => e
+    Rails.logger.error(
+      "discourse-fcm-notifications jobs disabled: #{e.class}: #{e.message}",
+    )
+    false
   end
 
-  #DiscourseEvent.on(:user_logged_out) do |user|
-  #  if SiteSetting.fcm_notifications_enabled?
-  #    DiscourseFcmNotifications::Pusher.unsubscribe(user)
-  #    user.save_custom_fields(true)
-  #  end
-  #end
+  if jobs_ready
+    module ::Jobs
+      unless const_defined?(:SendFcmNotifications, false)
+        class SendFcmNotifications < ::Jobs::Base
+          def execute(args)
+            return unless SiteSetting.fcm_notifications_enabled?
 
-  module ::Jobs
-    class SendFcmNotifications < ::Jobs::Base
-      def execute(args)
-        return unless SiteSetting.fcm_notifications_enabled?
+            user = User.find(args[:user_id])
+            DiscourseFcmNotifications::Pusher.push(user, args[:payload])
+          end
+        end
+      end
+    end
 
-        user = User.find(args[:user_id])
-        DiscourseFcmNotifications::Pusher.push(user, args[:payload])
+    DiscourseEvent.on(:push_notification) do |user, payload|
+      if SiteSetting.fcm_notifications_enabled?
+        token = user&.custom_fields&.[](DiscourseFcmNotifications::PLUGIN_NAME)
+        next if token.blank?
+        Jobs.enqueue(:send_fcm_notifications, user_id: user.id, payload: payload)
       end
     end
 
     # The job self-schedules hourly and evaluates each user's local Sunday
     # 19:00 window before sending a compact recap.
     Jobs.enqueue_in(1.hour, :weekly_smart_recap)
+  else
+    Rails.logger.error(
+      "discourse-fcm-notifications: Discourse job API unavailable; " \
+        "FCM and Smart Recap jobs will not be registered",
+    )
   end
 end

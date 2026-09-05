@@ -1,9 +1,5 @@
 # frozen_string_literal: true
 
-# Discourse no longer guarantees that Jobs::Base is loaded before plugin
-# files are evaluated. Keep this file safe when loaded directly by Zeitwerk.
-require_dependency "jobs/base" unless defined?(::Jobs::Base)
-
 module ::Jobs
   class WeeklySmartRecap < ::Jobs::Base
     WINDOW = 7.days
