@@ -19,6 +19,7 @@ module ::DiscourseFcmNotifications
 end
 
 require_relative "lib/discourse_fcm_notifications/engine"
+require_dependency File.expand_path("app/jobs/weekly_smart_recap", __dir__)
 
 after_initialize do
   User.register_custom_field_type(DiscourseFcmNotifications::PLUGIN_NAME, :json)
@@ -26,6 +27,8 @@ after_initialize do
 
   DiscourseEvent.on(:push_notification) do |user, payload|
     if SiteSetting.fcm_notifications_enabled?
+      token = user&.custom_fields&.[](DiscourseFcmNotifications::PLUGIN_NAME)
+      next if token.blank?
       Jobs.enqueue(:send_fcm_notifications, user_id: user.id, payload: payload)
     end
   end
@@ -47,5 +50,9 @@ after_initialize do
         DiscourseFcmNotifications::Pusher.push(user, args[:payload])
       end
     end
+
+    # The job self-schedules hourly and evaluates each user's local Sunday
+    # 19:00 window before sending a compact recap.
+    Jobs.enqueue_in(1.hour, :weekly_smart_recap)
   end
 end
