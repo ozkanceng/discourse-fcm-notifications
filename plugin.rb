@@ -29,7 +29,7 @@ after_initialize do
   # finished initialization, and fail closed if the job API is unavailable.
   jobs_ready = begin
     require_dependency "jobs/base" unless defined?(::Jobs::Base)
-    require_dependency File.expand_path("app/jobs/weekly_smart_recap", __dir__)
+    require_dependency File.expand_path("app/jobs/regular/weekly_smart_recap", __dir__)
     defined?(::Jobs::Base) && defined?(::Jobs::WeeklySmartRecap)
   rescue StandardError => e
     Rails.logger.error(
