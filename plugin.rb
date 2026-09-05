@@ -19,6 +19,10 @@ module ::DiscourseFcmNotifications
 end
 
 require_relative "lib/discourse_fcm_notifications/engine"
+# Jobs::Base is not eager-loaded by newer Discourse versions. Load it before
+# loading plugin job classes so Zeitwerk does not evaluate them with an
+# unresolved superclass.
+require_dependency "jobs/base"
 require_dependency File.expand_path("app/jobs/weekly_smart_recap", __dir__)
 
 after_initialize do
@@ -40,7 +44,6 @@ after_initialize do
   #  end
   #end
 
-  require_dependency 'jobs/base'
   module ::Jobs
     class SendFcmNotifications < ::Jobs::Base
       def execute(args)
