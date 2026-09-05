@@ -11,6 +11,7 @@ module ::DiscourseFcmNotifications
         DiscourseFcmNotifications::Pusher.unsubscribe(current_user)
         render json: { success: 'SUCCESS' }
       else
+        return render json: { failed: 'FAILED', error: 'Invalid token' }, status: :unprocessable_entity if params[:token].to_s.blank? || params[:token].to_s.length > 4096
         DiscourseFcmNotifications::Pusher.subscribe(current_user, params[:token])
         if DiscourseFcmNotifications::Pusher.confirm_subscribe(current_user)
           #flash.now[:notice] = "You have successfully subscribed to push notifications."
@@ -23,6 +24,7 @@ module ::DiscourseFcmNotifications
     end
     
     def subscribe
+      return render json: { failed: 'FAILED', error: 'Invalid token' }, status: :unprocessable_entity if params[:subscription].to_s.blank? || params[:subscription].to_s.length > 4096
       if current_user.custom_fields[DiscourseFcmNotifications::PLUGIN_NAME] != params[:subscription]
         DiscourseFcmNotifications::Pusher.subscribe(current_user, params[:subscription])
         if DiscourseFcmNotifications::Pusher.confirm_subscribe(current_user)

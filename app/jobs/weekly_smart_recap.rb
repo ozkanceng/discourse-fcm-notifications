@@ -5,6 +5,8 @@ module ::Jobs
     WINDOW = 7.days
 
     def execute(args)
+      lock_key = "sorumatik:smart_recap:job_lock"
+      return unless Discourse.redis.set(lock_key, "1", nx: true, ex: 300)
       users = if args[:user_id].present?
                 [User.find_by(id: args[:user_id])].compact
               else

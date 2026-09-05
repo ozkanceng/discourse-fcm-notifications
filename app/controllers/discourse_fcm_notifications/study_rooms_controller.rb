@@ -50,6 +50,7 @@ module DiscourseFcmNotifications
 
     def pomodoro_action(action)
       room = StudyRoom.find(params[:id]); authorize_member!(room)
+      authorize_owner!(room) unless action == 'skip'
       now = Time.zone.now
       case action
       when 'start' then room.update!(pomodoro_phase: 'focus', phase_started_at: now)
@@ -79,6 +80,10 @@ module DiscourseFcmNotifications
 
     def authorize_member!(room)
       raise Discourse::NotFound unless room.members.exists?(user_id: current_user.id)
+    end
+
+    def authorize_owner!(room)
+      raise Discourse::NotFound unless room.owner_id == current_user.id
     end
 
     def serialize(room)

@@ -15,6 +15,7 @@ class CreateSorumatikStudyFeatures < ActiveRecord::Migration[7.0]
     end
     add_index :study_rooms, :invite_code, unique: true
     add_index :study_rooms, :owner_id
+    add_foreign_key :study_rooms, :users, column: :owner_id, on_delete: :cascade
 
     create_table :study_room_members do |t|
       t.integer :room_id, null: false
@@ -24,6 +25,8 @@ class CreateSorumatikStudyFeatures < ActiveRecord::Migration[7.0]
       t.datetime :last_seen_at, null: false
     end
     add_index :study_room_members, [:room_id, :user_id], unique: true
+    add_foreign_key :study_room_members, :study_rooms, column: :room_id, on_delete: :cascade
+    add_foreign_key :study_room_members, :users, column: :user_id, on_delete: :cascade
 
     create_table :study_room_events do |t|
       t.integer :room_id, null: false
@@ -35,6 +38,8 @@ class CreateSorumatikStudyFeatures < ActiveRecord::Migration[7.0]
     end
     add_index :study_room_events, [:room_id, :event_id], unique: true
     add_index :study_room_events, [:room_id, :id]
+    add_foreign_key :study_room_events, :study_rooms, column: :room_id, on_delete: :cascade
+    add_foreign_key :study_room_events, :users, column: :actor_id, on_delete: :cascade
 
     create_table :sorumatik_study_events do |t|
       t.integer :user_id, null: false
@@ -45,5 +50,6 @@ class CreateSorumatikStudyFeatures < ActiveRecord::Migration[7.0]
       t.timestamps
     end
     add_index :sorumatik_study_events, [:user_id, :event_id], unique: true
+    add_foreign_key :sorumatik_study_events, :users, column: :user_id, on_delete: :cascade
   end
 end
