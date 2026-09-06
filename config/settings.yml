@@ -8,3 +8,20 @@ plugins:
     default: ''
   fcm_notifications_google_json:
     default: ''
+  blackboard_tts_enabled:
+    default: false
+    description: 'Generate cached Kara Tahta narration with Gemini 2.5 Flash TTS'
+  blackboard_gemini_api_key:
+    default: ''
+    secret: true
+  blackboard_tts_model:
+    default: 'gemini-2.5-flash-preview-tts'
+    description: 'Gemini speech generation model'
+  blackboard_openai_api_key:
+    default: ''
+    secret: true
+    description: 'Deprecated; no longer used for Kara Tahta narration'
+  blackboard_tts_voice:
+    default: 'Kore'
+  blackboard_tts_speed_version:
+    default: '1'

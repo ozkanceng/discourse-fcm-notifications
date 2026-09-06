@@ -18,5 +18,8 @@ Discourse::Application.routes.draw do
     post '/question-matches' => 'study_features#question_matches'
     post '/topics/:topic_id/image-hash' => 'study_features#attach_image_hash'
     post '/study-events/batch' => 'study_features#study_events'
+    get '/blackboard-solutions/:topic_id' => 'blackboard_solutions#show'
+    post '/blackboard-solutions/:topic_id/generate' => 'blackboard_solutions#generate'
+    post '/blackboard-solutions/:topic_id' => 'blackboard_solutions#store'
   end
 end

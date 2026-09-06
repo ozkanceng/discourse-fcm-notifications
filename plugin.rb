@@ -31,7 +31,7 @@ after_initialize do
     require_dependency "jobs/base" unless defined?(::Jobs::Base)
     require_dependency File.expand_path("app/jobs/regular/weekly_smart_recap", __dir__)
     defined?(::Jobs::Base) && defined?(::Jobs::WeeklySmartRecap)
-  rescue StandardError => e
+  rescue LoadError, NameError, StandardError => e
     Rails.logger.error(
       "discourse-fcm-notifications jobs disabled: #{e.class}: #{e.message}",
     )
