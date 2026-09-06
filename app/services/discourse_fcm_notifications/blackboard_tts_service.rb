@@ -5,6 +5,7 @@ require 'digest'
 require 'fileutils'
 require 'json'
 require 'net/http'
+require 'open3'
 require 'uri'
 
 module DiscourseFcmNotifications
@@ -17,6 +18,8 @@ module DiscourseFcmNotifications
     BYTES_PER_SAMPLE = 2
     MAX_INPUT_CHARS = 4096
     MAX_CONCURRENCY = 4
+    DEFAULT_FORMAT = 'mp3'
+    ENCODER_VERSION = 'ffmpeg-lame-v1'
 
     def self.enrich!(payload, language:, fingerprint:)
       return payload unless enabled?
@@ -25,6 +28,8 @@ module DiscourseFcmNotifications
       model = SiteSetting.blackboard_tts_model.presence || MODEL
       voice = SiteSetting.blackboard_tts_voice.presence || 'Kore'
       speed_version = SiteSetting.blackboard_tts_speed_version.presence || '1'
+      format = SiteSetting.blackboard_tts_format.presence || DEFAULT_FORMAT
+      format = DEFAULT_FORMAT unless %w[mp3 wav].include?(format)
       source = fingerprint.presence || Digest::SHA256.hexdigest(JSON.generate(payload))
       jobs = steps.each_with_index.filter_map do |step, step_index|
         next unless step.is_a?(Hash)
@@ -33,7 +38,7 @@ module DiscourseFcmNotifications
         { index: step_index, text: text }
       end
       tracks = parallel_map(jobs) do |job|
-        create_track(job[:text], job[:index], source: source, language: language, model: model, voice: voice, speed_version: speed_version)
+        create_track(job[:text], job[:index], source: source, language: language, model: model, voice: voice, speed_version: speed_version, format: format)
       end.compact.sort_by { |track| track['step_index'] }
       payload['audio'] = {
         'status' => tracks.length == jobs.length && tracks.any? ? 'ready' : 'failed',
@@ -58,28 +63,40 @@ module DiscourseFcmNotifications
     end
     private_class_method :enabled?
 
-    def self.create_track(text, index, source:, language:, model:, voice:, speed_version:)
+    def self.create_track(text, index, source:, language:, model:, voice:, speed_version:, format:)
       fingerprint = Digest::SHA256.hexdigest(text)
-      cache_id = Digest::SHA256.hexdigest([model, voice, bcp47(language), speed_version, index, fingerprint].join('|'))
+      cache_id = Digest::SHA256.hexdigest([model, voice, bcp47(language), speed_version, format, ENCODER_VERSION, index, fingerprint].join('|'))
       directory = Rails.root.join('public', 'uploads', 'blackboard_audio', source.to_s)
       FileUtils.mkdir_p(directory)
-      filename = "#{cache_id}.wav"
-      path = directory.join(filename)
+      pcm_path = directory.join("#{cache_id}.pcm")
+      requested_path = directory.join("#{cache_id}.#{format}")
       pcm = nil
-      unless File.exist?(path)
+      unless File.exist?(requested_path)
         pcm = split_text(text).filter_map { |chunk| request_pcm(chunk, model: model, voice: voice, language: language) }.join
         raise 'Gemini returned no audio' if pcm.blank?
-        File.binwrite(path, wav_bytes(pcm))
+        File.binwrite(pcm_path, pcm)
+        if format == 'mp3'
+          begin
+            File.binwrite(requested_path, encode_mp3(pcm))
+          rescue StandardError => e
+            Rails.logger.warn("Blackboard MP3 encoding unavailable, using WAV: #{e.message}")
+            format = 'wav'
+            requested_path = directory.join("#{cache_id}.wav")
+            File.binwrite(requested_path, wav_bytes(pcm))
+          end
+        else
+          File.binwrite(requested_path, wav_bytes(pcm))
+        end
       end
-      bytes = pcm || wav_data(path)
+      bytes = pcm || File.binread(pcm_path)
       {
         'step_index' => index,
-        'url' => "#{Discourse.base_url}/uploads/blackboard_audio/#{source}/#{filename}",
+        'url' => "#{Discourse.base_url}/uploads/blackboard_audio/#{source}/#{requested_path.basename}",
         'model' => model,
         'voice_name' => voice,
         'voice' => voice,
         'language' => bcp47(language),
-        'format' => 'wav',
+        'format' => format,
         'sample_rate' => SAMPLE_RATE,
         'duration_ms' => ((bytes.bytesize * 1000.0) / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE)).round,
         'source_fingerprint' => source,
@@ -133,6 +150,20 @@ module DiscourseFcmNotifications
     end
     private_class_method :request_pcm
 
+    def self.encode_mp3(pcm)
+      ffmpeg = ENV['BLACKBOARD_FFMPEG_PATH'].presence || 'ffmpeg'
+      stdout, stderr, status = Open3.capture3(
+        ffmpeg, '-hide_banner', '-loglevel', 'error', '-f', 's16le', '-ar', SAMPLE_RATE.to_s,
+        '-ac', CHANNELS.to_s, '-i', 'pipe:0', '-codec:a', 'libmp3lame', '-b:a', '128k', '-f', 'mp3', 'pipe:1',
+        stdin_data: pcm,
+      )
+      raise "ffmpeg failed: #{stderr.to_s[0, 300]}" unless status.success? && stdout.present?
+      stdout
+    rescue Errno::ENOENT
+      raise 'ffmpeg executable not found'
+    end
+    private_class_method :encode_mp3
+
     def self.wav_bytes(pcm)
       data_size = pcm.bytesize
       ["RIFF", 36 + data_size, "WAVE", "fmt ", 16, 1, CHANNELS, SAMPLE_RATE,
@@ -140,14 +171,6 @@ module DiscourseFcmNotifications
        "data", data_size].pack('A4VA4A4VvvVVvvA4V') + pcm
     end
     private_class_method :wav_bytes
-
-    def self.wav_data(path)
-      bytes = File.binread(path)
-      bytes.byteslice(44..-1) || ''.b
-    rescue StandardError
-      ''.b
-    end
-    private_class_method :wav_data
 
     def self.split_text(text)
       return [text] if text.length <= MAX_INPUT_CHARS
