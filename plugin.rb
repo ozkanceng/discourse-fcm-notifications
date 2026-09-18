@@ -7,10 +7,12 @@
 # url: https://github.com/sprachprofi/discourse-fcm-notifications
 
 enabled_site_setting :fcm_notifications_enabled
-gem 'signet', '0.17.0'
+gem 'signet', '0.22.0'
 gem 'os', '1.1.4'
 gem 'memoist', '0.16.2'
-gem 'googleauth', '1.7.0'
+gem 'google-cloud-env', '2.2.1'
+gem 'google-logging-utils', '0.1.0'
+gem 'googleauth', '1.15.0'
 gem 'fcm', '1.0.8'
 
 module ::DiscourseFcmNotifications
