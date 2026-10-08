@@ -51,7 +51,12 @@ module ::DiscourseFcmNotifications
     # Sends the compact weekly study summary. The payload type is consumed by
     # the Flutter client to open the progress screen directly.
     def self.push_smart_recap(user, summary, locale: nil)
-      language = locale.to_s.presence || user.locale.to_s.presence || I18n.locale.to_s
+      user_locale = if user.respond_to?(:effective_locale)
+                      user.effective_locale
+                    elsif user.respond_to?(:user_option)
+                      user.user_option&.locale
+                    end
+      language = locale.to_s.presence || user_locale.to_s.presence || (SiteSetting.default_locale if defined?(SiteSetting)) || I18n.locale.to_s
       title = case language.to_s.downcase.split('-').first
               when 'tr' then 'Haftalık çalışma özeti'
               when 'es' then 'Resumen semanal de estudio'
