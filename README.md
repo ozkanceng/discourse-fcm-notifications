@@ -29,3 +29,20 @@ The push notifications that this app creates will include:
 ````
 
 So you need to display the push notification with title/body and tapping on it should open the URL from linked_obj_data in an in-app browser. 
+
+## Sorumatik mobile answer compatibility
+
+This fork is maintained at
+[`ozkanceng/discourse-fcm-notifications`](https://github.com/ozkanceng/discourse-fcm-notifications).
+Install it together with the protocol-2 release of
+[`ozkanceng/discourse-sorumatik-ocr`](https://github.com/ozkanceng/discourse-sorumatik-ocr).
+
+Posts marked `client_edge_solve=true` and `mobile_answer_protocol>=2` are
+owned by the mobile application. The native AI adapter neither starts
+generation nor publishes streaming snapshots for those posts. Saving the
+completed answer still triggers the normal notification jobs. Legacy web
+streaming remains optional and disabled by default.
+
+Update this fork before enabling protocol 2 in the OCR plugin, then rebuild
+Discourse. Rails integration specifications are included under
+`spec/lib/ai_answer_streaming_spec.rb`; they require a Discourse test environment.

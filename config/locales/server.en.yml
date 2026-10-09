@@ -5,6 +5,7 @@ en:
     fcm_notifications_api_key: Your Firebase key
     fcm_notifications_google_json: Complete content of json file
   discourse_fcm_notifications:
+    ai_answer_failed: 'AI answer could not be generated.'
     confirm_title: 'App Notifications - %{site_title}'
     confirm_body: 'App notifications have been enabled!'
     subscribe_error: 'Could not subscribe. Is your device key correct?'

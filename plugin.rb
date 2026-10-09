@@ -4,7 +4,7 @@
 # about: Plugin for integrating firebase notifications to a custom app
 # version: 0.2.0
 # authors: Judith Meyer, Jeff Wong (original plugin: discourse-pushover-notifications)
-# url: https://github.com/sprachprofi/discourse-fcm-notifications
+# url: https://github.com/ozkanceng/discourse-fcm-notifications
 
 enabled_site_setting :fcm_notifications_enabled
 gem 'signet', '0.22.0'
@@ -23,6 +23,20 @@ end
 require_relative "lib/discourse_fcm_notifications/engine"
 
 after_initialize do
+  begin
+    require_dependency "discourse_ai/ai_bot/playground"
+    require_relative "lib/discourse_fcm_notifications/ai_answer_streaming"
+    unless DiscourseAi::AiBot::Playground < DiscourseFcmNotifications::AiAnswerStreaming
+      DiscourseAi::AiBot::Playground.prepend(
+        DiscourseFcmNotifications::AiAnswerStreaming,
+      )
+    end
+  rescue LoadError, NameError => e
+    Rails.logger.warn(
+      "discourse-fcm-notifications AI streaming disabled: #{e.class}: #{e.message}",
+    )
+  end
+
   User.register_custom_field_type(DiscourseFcmNotifications::PLUGIN_NAME, :json)
   allow_staff_user_custom_field DiscourseFcmNotifications::PLUGIN_NAME
 
