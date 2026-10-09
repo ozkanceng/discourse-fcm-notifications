@@ -8,6 +8,18 @@ plugins:
     default: ''
   fcm_notifications_google_json:
     default: ''
+  sorumatik_ai_live_streaming_enabled:
+    default: false
+    client: true
+    description: 'Publish user-scoped AI answer snapshots over MessageBus'
+  sorumatik_ai_live_stream_tag:
+    default: 'soru-cozumu'
+  sorumatik_ai_bot_username:
+    default: 'sorumatik_ai'
+  sorumatik_ai_stream_throttle_ms:
+    default: 80
+    min: 40
+    max: 1000
   blackboard_tts_enabled:
     default: false
     description: 'Generate cached Kara Tahta narration with Gemini 2.5 Flash TTS'
@@ -28,3 +40,11 @@ plugins:
   blackboard_tts_format:
     default: 'mp3'
     description: 'Preferred cached audio format; falls back to WAV when FFmpeg is unavailable'
+  blackboard_premium_groups:
+    default: ''
+    type: list
+    description: 'Verified paid Premium group names. Empty denies access. Manage membership only through verified purchases or administrators.'
+  blackboard_daily_limit:
+    default: 5
+    min: 1
+    max: 100

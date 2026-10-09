@@ -7,10 +7,12 @@
 # url: https://github.com/sprachprofi/discourse-fcm-notifications
 
 enabled_site_setting :fcm_notifications_enabled
-gem 'signet', '0.17.0'
+gem 'signet', '0.22.0'
 gem 'os', '1.1.4'
 gem 'memoist', '0.16.2'
-gem 'googleauth', '1.7.0'
+gem 'google-cloud-env', '2.2.1'
+gem 'google-logging-utils', '0.1.0'
+gem 'googleauth', '1.15.0'
 gem 'fcm', '1.0.8'
 
 module ::DiscourseFcmNotifications
@@ -21,6 +23,20 @@ end
 require_relative "lib/discourse_fcm_notifications/engine"
 
 after_initialize do
+  begin
+    require_dependency "discourse_ai/ai_bot/playground"
+    require_relative "lib/discourse_fcm_notifications/ai_answer_streaming"
+    unless DiscourseAi::AiBot::Playground < DiscourseFcmNotifications::AiAnswerStreaming
+      DiscourseAi::AiBot::Playground.prepend(
+        DiscourseFcmNotifications::AiAnswerStreaming,
+      )
+    end
+  rescue LoadError, NameError => e
+    Rails.logger.warn(
+      "discourse-fcm-notifications AI streaming disabled: #{e.class}: #{e.message}",
+    )
+  end
+
   User.register_custom_field_type(DiscourseFcmNotifications::PLUGIN_NAME, :json)
   allow_staff_user_custom_field DiscourseFcmNotifications::PLUGIN_NAME
 
@@ -29,6 +45,7 @@ after_initialize do
   # finished initialization, and fail closed if the job API is unavailable.
   jobs_ready = begin
     require_dependency "jobs/base" unless defined?(::Jobs::Base)
+    require_dependency File.expand_path("app/jobs/regular/blackboard_audio", __dir__)
     require_dependency File.expand_path("app/jobs/regular/weekly_smart_recap", __dir__)
     defined?(::Jobs::Base) && defined?(::Jobs::WeeklySmartRecap)
   rescue LoadError, NameError, StandardError => e

@@ -28,7 +28,9 @@ module ::Jobs
     def send_recap_if_due(user)
       return unless user
 
-      zone = ActiveSupport::TimeZone[user.timezone.to_s] || Time.zone
+      user_tz = (user.user_option&.timezone if user.respond_to?(:user_option)).presence ||
+                (SiteSetting.default_timezone if defined?(SiteSetting))
+      zone = ActiveSupport::TimeZone[user_tz.to_s] || Time.zone
       now = zone.now
       return unless now.sunday? && now.hour == 19
 
@@ -52,7 +54,13 @@ module ::Jobs
       end.join("\n")
       summary = "Bu hafta çalışma etkinliğin kaydedildi." if summary.empty?
 
-      if DiscourseFcmNotifications::Pusher.push_smart_recap(user, summary, locale: user.locale)
+      user_locale = if user.respond_to?(:effective_locale)
+                      user.effective_locale
+                    elsif user.respond_to?(:user_option)
+                      user.user_option&.locale
+                    end || (SiteSetting.default_locale if defined?(SiteSetting)) || I18n.locale.to_s
+
+      if DiscourseFcmNotifications::Pusher.push_smart_recap(user, summary, locale: user_locale)
         Discourse.redis.setex(key, 8.days.to_i, 'sent')
       end
     rescue StandardError => e

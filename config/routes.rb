@@ -19,7 +19,9 @@ Discourse::Application.routes.draw do
     post '/topics/:topic_id/image-hash' => 'study_features#attach_image_hash'
     post '/study-events/batch' => 'study_features#study_events'
     get '/blackboard-solutions/:topic_id' => 'blackboard_solutions#show'
+    post '/blackboard-solutions/:topic_id/cancel' => 'blackboard_solutions#cancel'
     post '/blackboard-solutions/:topic_id/generate' => 'blackboard_solutions#generate'
     post '/blackboard-solutions/:topic_id' => 'blackboard_solutions#store'
+    post '/save-solution' => 'ai_solutions#save_solution'
   end
 end

@@ -1,0 +1,21 @@
+tr:
+  site_settings:
+    fcm_notifications_enabled: Uygulama bildirimleri etkinleştirilsin mi?
+    fcm_notifications_project_id: Firebase proje ID
+    fcm_notifications_api_key: Firebase API anahtarı
+    fcm_notifications_google_json: Google JSON dosyasının içeriği
+  discourse_fcm_notifications:
+    ai_answer_failed: 'AI yanıtı oluşturulamadı.'
+    confirm_title: 'Bildirimler - %{site_title}'
+    confirm_body: 'Anlık bildirimler başarıyla etkinleştirildi!'
+    subscribe_error: 'Abone olunamadı. Cihaz anahtarınız doğru mu?'
+    the_same: 'Yeni anahtar eskisi ile aynı, işlem yapılmadı.'
+    popup:
+      mentioned: '%{username}, "%{topic}" konusunda sizden bahsetti - %{site_title}'
+      group_mentioned: '%{username}, "%{topic}" konusunda grubunuzdan bahsetti - %{site_title}'
+      quoted: '%{username}, "%{topic}" konusunda sizden alıntı yaptı - %{site_title}'
+      replied: '%{username}, "%{topic}" sorunuza cevap verdi - %{site_title}'
+      posted: '%{username}, "%{topic}" konusuna yazdı - %{site_title}'
+      private_message: '%{username} size özel mesaj gönderdi - %{site_title}'
+      chat_message: '%{username} size sohbet mesajı gönderdi - %{site_title}'
+      linked: '%{username}, "%{topic}" konunuza bağlantı verdi - %{site_title}'
