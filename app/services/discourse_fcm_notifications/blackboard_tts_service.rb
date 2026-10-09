@@ -33,9 +33,13 @@ module DiscourseFcmNotifications
       source = fingerprint.presence || Digest::SHA256.hexdigest(JSON.generate(payload))
       jobs = steps.each_with_index.filter_map do |step, step_index|
         next unless step.is_a?(Hash)
-        text = [step['speech_text'], step['speech'], step['cue_text']].compact.map(&:to_s).map(&:strip).reject(&:blank?).join('. ')
-        next if text.blank?
-        { index: step_index, text: text }
+        speech = (step['speech_text'].presence || step['speech']).to_s.strip
+        cue = step['cue_text'].to_s.strip
+        raw_text = cue.blank? || speech.downcase.include?(cue.downcase) ? speech : [speech, cue].reject(&:blank?).join('. ')
+        next if raw_text.blank?
+        cleaned = clean_speech_math(raw_text, language: language)
+        next if cleaned.blank?
+        { index: step_index, text: cleaned }
       end
       tracks = parallel_map(jobs) do |job|
         create_track(job[:text], job[:index], source: source, language: language, model: model, voice: voice, speed_version: speed_version, format: format)
@@ -130,25 +134,51 @@ module DiscourseFcmNotifications
     private_class_method :parallel_map
 
     def self.request_pcm(text, model:, voice:, language:)
+      api_key = SiteSetting.blackboard_gemini_api_key
+      raise 'Gemini API key missing' if api_key.blank?
+
+      models_to_try = [model, MODEL].compact.uniq
+      last_error = nil
+
+      models_to_try.each do |target_model|
+        begin
+          return attempt_request_pcm(text, model: target_model, voice: voice, language: language, api_key: api_key)
+        rescue StandardError => e
+          last_error = e
+          Rails.logger.warn("Blackboard Gemini TTS model '#{target_model}' failed: #{e.class}: #{e.message}")
+        end
+      end
+
+      raise last_error || 'All Gemini TTS attempts failed'
+    end
+    private_class_method :request_pcm
+
+    def self.attempt_request_pcm(text, model:, voice:, language:, api_key:)
       uri = URI("https://#{API_HOST}#{format(API_PATH, model)}")
       request = Net::HTTP::Post.new(uri)
-      request['x-goog-api-key'] = SiteSetting.blackboard_gemini_api_key
+      request['x-goog-api-key'] = api_key
       request['Content-Type'] = 'application/json'
       request.body = JSON.generate(
-        contents: [{ parts: [{ text: "Read this educational explanation naturally and clearly: #{text}" }] }],
+        contents: [{ parts: [{ text: "Read only the following explanation in #{bcp47(language)}, naturally, as a patient teacher. Pause at sentence boundaries and pronounce mathematical terms clearly: #{text}" }] }],
         generationConfig: {
           responseModalities: ['AUDIO'],
-          speechConfig: { languageCode: bcp47(language), voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: voice.presence || 'Kore'
+              }
+            }
+          },
         },
       )
-      response = Net::HTTP.start(uri.host, uri.port, use_ssl: true, read_timeout: 60) { |http| http.request(request) }
+      response = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 8, read_timeout: 45) { |http| http.request(request) }
       raise "Gemini TTS #{response.code}: #{response.body.to_s[0, 300]}" unless response.is_a?(Net::HTTPSuccess)
       body = JSON.parse(response.body)
       encoded = body.dig('candidates', 0, 'content', 'parts')&.filter_map { |part| part.dig('inlineData', 'data') || part.dig('inline_data', 'data') }&.first
       raise 'Gemini audio payload missing' if encoded.blank?
       Base64.decode64(encoded)
     end
-    private_class_method :request_pcm
+    private_class_method :attempt_request_pcm
 
     def self.encode_mp3(pcm)
       ffmpeg = ENV['BLACKBOARD_FFMPEG_PATH'].presence || 'ffmpeg'
@@ -182,5 +212,85 @@ module DiscourseFcmNotifications
       { 'tr' => 'tr-TR', 'en' => 'en-US', 'es' => 'es-ES', 'hi' => 'hi-IN', 'id' => 'id-ID' }.fetch(language.to_s.downcase, language.to_s)
     end
     private_class_method :bcp47
+
+    def self.clean_speech_math(raw, language:)
+      return '' if raw.blank?
+      text = raw.to_s.dup
+      text.gsub!(/[$]+|\\\(|\\\)|\\\[|\\\]/, ' ')
+      text.gsub!(/\\(?:textbf|textit|mathrm|mathbf|text)\s*\{([^}]*)\}/, '\1')
+      text.gsub!(/\\(?:left|right|big|Big|bigg|Bigg)[.()\[\]|\/]?/, ' ')
+
+      is_tr = language.to_s.downcase.start_with?('tr')
+      if is_tr
+        text.gsub!(/\\alpha/, 'alfa')
+        text.gsub!(/\\beta/, 'beta')
+        text.gsub!(/\\gamma/, 'gama')
+        text.gsub!(/\\delta|\\Delta/, 'delta')
+        text.gsub!(/\\theta/, 'teta')
+        text.gsub!(/\\pi/, 'pi')
+        text.gsub!(/\\sigma/, 'sigma')
+        text.gsub!(/\\lambda/, 'lamda')
+        text.gsub!(/\\omega/, 'omega')
+      end
+
+      # Fractions
+      while text.match?(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/)
+        text.gsub!(/\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/) do
+          is_tr ? "#{$1.strip} bölü #{$2.strip}" : "#{$1.strip} divided by #{$2.strip}"
+        end
+      end
+
+      # Roots
+      text.gsub!(/\\sqrt\[([^\]]+)\]\{([^{}]+)\}/) { is_tr ? "#{$1.strip} inci kök #{$2.strip}" : "#{$1.strip} root of #{$2.strip}" }
+      text.gsub!(/\\sqrt\{([^{}]+)\}/) { is_tr ? "karekök #{$1.strip}" : "square root of #{$1.strip}" }
+      text.gsub!(/\^\{?\\circ\}?/, is_tr ? ' derece' : ' degrees')
+
+      # Powers & Subscripts
+      text.gsub!(/([A-Za-z0-9_]+)\^2\b/, is_tr ? '\1 kare' : '\1 squared')
+      text.gsub!(/([A-Za-z0-9_]+)\^3\b/, is_tr ? '\1 küp' : '\1 cubed')
+      text.gsub!(/\^\{?([0-9A-Za-z+-]+)\}?/, is_tr ? ' üzeri \1' : ' to the power of \1')
+      text.gsub!(/([A-Za-z])_\{?([0-9]+)\}?/, '\1 \2')
+      text.gsub!(/([A-Za-z])_\{?([A-Za-z])\}?/, '\1 \2')
+
+      if is_tr
+        text.gsub!(/\\cdot|\\times/, ' çarpı ')
+        text.gsub!(/\\div/, ' bölü ')
+        text.gsub!(/\\pm|\\mp/, ' artı eksi ')
+        text.gsub!(/\\leq|\\le/, ' küçük eşittir ')
+        text.gsub!(/\\geq|\\ge/, ' büyük eşittir ')
+        text.gsub!(/\\neq|\\ne/, ' eşit değildir ')
+        text.gsub!(/\\approx/, ' yaklaşık olarak ')
+        text.gsub!(/\\to|\\rightarrow/, ' giderken ')
+        text.gsub!(/\\infty/, ' sonsuz ')
+        text.gsub!(/\\sum/, ' toplam ')
+        text.gsub!(/\\int/, ' integral ')
+      end
+
+      unless is_tr
+        text.gsub!(/\\cdot|\\times/, ' times ')
+        text.gsub!(/\\div/, ' divided by ')
+        text.gsub!(/\\pm|\\mp/, ' plus or minus ')
+        text.gsub!(/\\leq|\\le/, ' less than or equal to ')
+        text.gsub!(/\\geq|\\ge/, ' greater than or equal to ')
+        text.gsub!(/\\neq|\\ne/, ' not equal to ')
+        text.gsub!(/\\approx/, ' approximately ')
+        text.gsub!(/\\to|\\rightarrow/, ' approaches ')
+        text.gsub!(/\\infty/, ' infinity ')
+      end
+      phrases = ['divided by', 'square root of', 'to the power of', 'squared', 'cubed', 'degrees', 'times', 'plus or minus', 'less than or equal to', 'greater than or equal to', 'not equal to', 'approximately', 'approaches', 'infinity']
+      dictionaries = {
+        'es' => ['dividido por', 'raíz cuadrada de', 'elevado a', 'al cuadrado', 'al cubo', 'grados', 'por', 'más o menos', 'menor o igual que', 'mayor o igual que', 'distinto de', 'aproximadamente', 'tiende a', 'infinito'],
+        'hi' => ['भाग', 'वर्गमूल', 'की घात', 'का वर्ग', 'का घन', 'डिग्री', 'गुणा', 'जोड़ या घटाव', 'से कम या बराबर', 'से अधिक या बराबर', 'के बराबर नहीं', 'लगभग', 'की ओर', 'अनंत'],
+        'id' => ['dibagi', 'akar kuadrat dari', 'pangkat', 'kuadrat', 'kubik', 'derajat', 'kali', 'plus atau minus', 'kurang dari atau sama dengan', 'lebih dari atau sama dengan', 'tidak sama dengan', 'kira-kira', 'mendekati', 'tak hingga'],
+      }
+      words = dictionaries[language.to_s.downcase.split(/[-_]/).first]
+      phrases.each_with_index { |phrase, index| text.gsub!(/\b#{Regexp.escape(phrase)}\b/, words[index]) } if words
+
+      text.gsub!(/\\[a-zA-Z]+/, ' ')
+      text.gsub!(/[\\]/, ' ')
+      text.gsub!(/[{}]/, ' ')
+      text.squeeze(' ').strip
+    end
+    private_class_method :clean_speech_math
   end
 end
