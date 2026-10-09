@@ -43,7 +43,7 @@ plugins:
   blackboard_premium_groups:
     default: ''
     type: list
-    description: 'Verified paid Premium group names. Empty denies access. Manage membership only through verified purchases or administrators.'
+    description: 'Verified paid Premium group names. When empty, all authenticated users have access (subject to daily limit).'
   blackboard_daily_limit:
     default: 5
     min: 1
