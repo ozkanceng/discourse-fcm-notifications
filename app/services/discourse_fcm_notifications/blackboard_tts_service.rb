@@ -12,7 +12,7 @@ module DiscourseFcmNotifications
   class BlackboardTtsService
     API_HOST = 'generativelanguage.googleapis.com'
     API_PATH = '/v1beta/models/%s:generateContent'
-    MODEL = 'gemini-2.5-flash-preview-tts'
+    MODEL = 'gemini-3.8-flash-lite-tts'
     SAMPLE_RATE = 24_000
     CHANNELS = 1
     BYTES_PER_SAMPLE = 2
@@ -25,7 +25,9 @@ module DiscourseFcmNotifications
       return payload unless enabled?
       steps = payload['steps']
       return payload unless steps.is_a?(Array)
-      model = SiteSetting.blackboard_tts_model.presence || MODEL
+      model = SiteSetting.blackboard_tts_model.presence ||
+              (SiteSetting.respond_to?(:gemini_tts_model) && SiteSetting.gemini_tts_model.presence) ||
+              MODEL
       voice = SiteSetting.blackboard_tts_voice.presence || 'Kore'
       speed_version = SiteSetting.blackboard_tts_speed_version.presence || '1'
       format = SiteSetting.blackboard_tts_format.presence || DEFAULT_FORMAT
@@ -76,7 +78,8 @@ module DiscourseFcmNotifications
       requested_path = directory.join("#{cache_id}.#{format}")
       pcm = nil
       unless File.exist?(requested_path)
-        pcm = split_text(text).filter_map { |chunk| request_pcm(chunk, model: model, voice: voice, language: language) }.join
+        chunks = split_text(text).filter_map { |chunk| request_pcm(chunk, model: model, voice: voice, language: language) }
+        pcm = concat_pcm_chunks(chunks)
         raise 'Gemini returned no audio' if pcm.blank?
         File.binwrite(pcm_path, pcm)
         if format == 'mp3'
@@ -162,6 +165,12 @@ module DiscourseFcmNotifications
         contents: [{ parts: [{ text: "Read only the following explanation in #{bcp47(language)}, naturally, as a patient teacher. Pause at sentence boundaries and pronounce mathematical terms clearly: #{text}" }] }],
         generationConfig: {
           responseModalities: ['AUDIO'],
+          responseFormat: {
+            audio: {
+              mimeType: 'AUDIO_L16',
+              sampleRate: SAMPLE_RATE,
+            }
+          },
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
@@ -176,9 +185,35 @@ module DiscourseFcmNotifications
       body = JSON.parse(response.body)
       encoded = body.dig('candidates', 0, 'content', 'parts')&.filter_map { |part| part.dig('inlineData', 'data') || part.dig('inline_data', 'data') }&.first
       raise 'Gemini audio payload missing' if encoded.blank?
-      Base64.decode64(encoded)
+      extract_clean_pcm(Base64.decode64(encoded))
     end
     private_class_method :attempt_request_pcm
+
+    def self.extract_clean_pcm(bytes)
+      return '' if bytes.blank?
+      data = bytes
+      while data.bytesize >= 12 && data[0, 4] == 'RIFF' && data[8, 4] == 'WAVE'
+        offset = 12
+        found_data = false
+        while offset + 8 <= data.bytesize
+          chunk_id = data[offset, 4]
+          chunk_size = data[offset + 4, 4].unpack1('V')
+          offset += 8
+          if chunk_id == 'data'
+            end_offset = [offset + chunk_size, data.bytesize].min
+            data = data[offset...end_offset]
+            found_data = true
+            break
+          end
+          offset += chunk_size + (chunk_size % 2)
+        end
+        break unless found_data
+      end
+      pcm_len = data.bytesize & ~1
+      return '' if pcm_len < 2
+      data[0...pcm_len]
+    end
+    private_class_method :extract_clean_pcm
 
     def self.encode_mp3(pcm)
       ffmpeg = ENV['BLACKBOARD_FFMPEG_PATH'].presence || 'ffmpeg'
@@ -201,6 +236,56 @@ module DiscourseFcmNotifications
        "data", data_size].pack('A4VA4A4VvvVVvvA4V') + pcm
     end
     private_class_method :wav_bytes
+
+    def self.concat_pcm_chunks(chunks)
+      return '' if chunks.blank?
+      clean_chunks = chunks.filter_map do |c|
+        pcm = extract_clean_pcm(c)
+        pcm.presence
+      end
+      return '' if clean_chunks.blank?
+
+      combined = if clean_chunks.length == 1
+        clean_chunks.first
+      else
+        clean_chunks.inject do |acc, chunk|
+          crossfade_pcm(acc, chunk, ramp_samples: 120)
+        end
+      end
+
+      # Apply 10ms (240 samples at 24kHz) smooth fade-out at the very end to guarantee zero DC offset / no end cızırtı
+      samples = combined.unpack('s<*')
+      ramp = [240, samples.length / 4].min
+      if ramp > 0
+        ramp.times do |i|
+          factor = i.to_f / ramp
+          idx = samples.length - 1 - i
+          samples[idx] = (samples[idx] * factor).round
+        end
+      end
+      samples.pack('s<*')
+    end
+    private_class_method :concat_pcm_chunks
+
+    def self.crossfade_pcm(pcm_a, pcm_b, ramp_samples: 120)
+      return pcm_b if pcm_a.blank?
+      return pcm_a if pcm_b.blank?
+      pcm_a_len = pcm_a.bytesize / 2
+      pcm_b_len = pcm_b.bytesize / 2
+      fade = [ramp_samples, pcm_a_len / 4, pcm_b_len / 4].min
+      return pcm_a + pcm_b if fade <= 0
+
+      samples_a = pcm_a.unpack('s<*')
+      samples_b = pcm_b.unpack('s<*')
+      fade.times do |i|
+        factor = (i + 1).to_f / fade
+        idx_a = samples_a.length - fade + i
+        samples_a[idx_a] = (samples_a[idx_a] * (1.0 - factor)).round
+        samples_b[i] = (samples_b[i] * factor).round
+      end
+      samples_a.pack('s<*') + samples_b.pack('s<*')
+    end
+    private_class_method :crossfade_pcm
 
     def self.split_text(text)
       return [text] if text.length <= MAX_INPUT_CHARS

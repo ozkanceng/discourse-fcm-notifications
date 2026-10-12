@@ -142,14 +142,22 @@ module DiscourseFcmNotifications
     def ready_solution(topic)
       if requested_schema_version == 3
         requested_fingerprint = params[:source_fingerprint].to_s
-        return nil if requested_fingerprint.blank?
-        return BlackboardSolution.find_by(
+        if requested_fingerprint.present?
+          matched = BlackboardSolution.find_by(
+            topic_id: topic.id,
+            language: language,
+            schema_version: 3,
+            status: 'ready',
+            source_fingerprint: requested_fingerprint,
+          )
+          return matched if matched
+        end
+        return BlackboardSolution.where(
           topic_id: topic.id,
           language: language,
           schema_version: 3,
           status: 'ready',
-          source_fingerprint: requested_fingerprint,
-        )
+        ).order(created_at: :desc).first
       end
       solution = BlackboardSolution.find_by(
         topic_id: topic.id,

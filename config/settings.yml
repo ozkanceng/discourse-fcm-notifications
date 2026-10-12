@@ -27,7 +27,7 @@ plugins:
     default: ''
     secret: true
   blackboard_tts_model:
-    default: 'gemini-2.5-flash-preview-tts'
+    default: 'gemini-3.8-flash-lite-tts'
     description: 'Gemini speech generation model'
   blackboard_openai_api_key:
     default: ''
