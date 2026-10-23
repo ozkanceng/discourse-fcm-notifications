@@ -119,6 +119,71 @@ module DiscourseFcmNotifications
       render json: { error: 'generation_ownership_required' }, status: :conflict
     end
 
+    def upload_audio
+      topic = accessible_topic
+      return render json: { error: 'not_found' }, status: :not_found unless topic
+
+      solution = ready_solution(topic)
+      solution ||= BlackboardSolution.where(
+        topic_id: topic.id,
+        status: 'ready',
+      ).order(created_at: :desc).first
+      return render json: { error: 'solution_not_found' }, status: :not_found unless solution
+
+      step_index = params[:step_index].to_i
+      file = params[:file]
+      duration_ms = params[:duration_ms].to_i
+      format = params[:format].to_s.presence || (file.respond_to?(:original_filename) && file.original_filename.end_with?('.wav') ? 'wav' : 'mp3')
+      format = 'mp3' unless %w[mp3 wav].include?(format)
+      voice = params[:voice].to_s.presence || 'Kore'
+
+      return render json: { error: 'invalid_audio_file' }, status: :unprocessable_entity unless file && file.respond_to?(:read)
+
+      source = solution.source_fingerprint.presence || topic.id.to_s
+      directory = Rails.root.join('public', 'uploads', 'blackboard_audio', source)
+      FileUtils.mkdir_p(directory)
+
+      filename = "step_#{step_index}_#{Digest::SHA256.hexdigest(file.original_filename.to_s + step_index.to_s)[0, 12]}.#{format}"
+      target_path = directory.join(filename)
+      File.binwrite(target_path, file.read)
+
+      url = "#{Discourse.base_url}/uploads/blackboard_audio/#{source}/#{filename}"
+
+      solution.with_lock do
+        payload = solution.solution_json.deep_dup
+        payload['audio'] ||= { 'status' => 'pending', 'tracks' => [] }
+        tracks = payload['audio']['tracks'] || []
+        tracks.reject! { |t| t['step_index'] == step_index }
+        tracks << {
+          'step_index' => step_index,
+          'url' => url,
+          'duration_ms' => duration_ms > 0 ? duration_ms : nil,
+          'format' => format,
+          'voice' => voice,
+          'voice_name' => voice,
+        }
+        tracks.sort_by! { |t| t['step_index'] }
+        payload['audio']['tracks'] = tracks
+
+        total_steps = payload['steps']&.size || 0
+        if total_steps > 0 && tracks.size >= total_steps
+          payload['audio']['status'] = 'ready'
+        else
+          payload['audio']['status'] = 'ready_partial'
+        end
+
+        solution.update!(solution_json: payload)
+      end
+
+      render json: {
+        success: true,
+        step_index: step_index,
+        url: url,
+        status: solution.solution_json.dig('audio', 'status'),
+        tracks_count: solution.solution_json.dig('audio', 'tracks')&.size || 0,
+      }
+    end
+
     private
 
     def ensure_blackboard_access

@@ -22,6 +22,7 @@ Discourse::Application.routes.draw do
     post '/blackboard-solutions/:topic_id/cancel' => 'blackboard_solutions#cancel'
     post '/blackboard-solutions/:topic_id/generate' => 'blackboard_solutions#generate'
     post '/blackboard-solutions/:topic_id' => 'blackboard_solutions#store'
+    post '/blackboard-solutions/:topic_id/audio' => 'blackboard_solutions#upload_audio'
     post '/save-solution' => 'ai_solutions#save_solution'
   end
 end

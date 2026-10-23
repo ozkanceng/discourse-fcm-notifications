@@ -79,9 +79,11 @@ module ::DiscourseFcmNotifications
       return false unless post&.persisted? && post.user_id && post.topic
       return false unless Guardian.new(post.user).can_see?(post.topic)
 
-      tag_name = SiteSetting.sorumatik_ai_live_stream_tag.to_s.downcase
-      tagged = post.topic.tags.any? { |tag| tag.name.downcase == tag_name }
-      return false unless tagged
+      tag_name = SiteSetting.sorumatik_ai_live_stream_tag.to_s.strip.downcase
+      if tag_name.present? && !(defined?(::SorumatikOcr::AnswerGeneration) && ::SorumatikOcr::AnswerGeneration.question_topic?(post.topic))
+        tagged = post.topic.tags.any? { |tag| tag.name.downcase == tag_name }
+        return false unless tagged
+      end
       return true if post.post_number == 1
 
       bot_username = SiteSetting.sorumatik_ai_bot_username.to_s.downcase
