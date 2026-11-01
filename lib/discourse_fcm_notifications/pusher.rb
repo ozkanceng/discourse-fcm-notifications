@@ -2,10 +2,27 @@
 
 require "net/https"
 require "fileutils"
+require "json"
 
 module ::DiscourseFcmNotifications
+  # Raised when at least one device could not be reached because of a
+  # temporary problem (429, 5xx, network). The Sidekiq job lets it propagate so
+  # the delivery is retried; devices that already got the message are skipped
+  # on retry by the per-token duplicate guard.
+  class TransientDeliveryError < StandardError; end
+
   class Pusher
-    def self.push(user, payload)
+    PRIVATE_NOTIFICATION_TYPES = %i[
+      private_message
+      invited_to_private_message
+      group_message_summary
+    ].freeze
+
+    DUPLICATE_WINDOW_SECONDS = 30
+
+    def self.push(user, payload, raise_on_transient: false)
+      return false if push_disabled_by_user?(user)
+
       raw_type = payload[:notification_type]
       type_key = if raw_type.is_a?(Symbol)
                    raw_type
@@ -43,7 +60,11 @@ module ::DiscourseFcmNotifications
               end
 
       body_text = payload[:excerpt].to_s.strip
-      if body_text.blank?
+      if hide_excerpt?(type_key)
+        # Lock screens are visible to bystanders; never put private message
+        # content into the push body.
+        body_text = I18n.t("discourse_fcm_notifications.private_body", default: "You have a new private message.")
+      elsif body_text.blank?
         body_text = I18n.t("discourse_fcm_notifications.confirm_body", default: "Yeni bir bildiriminiz var.")
       end
 
@@ -64,33 +85,40 @@ module ::DiscourseFcmNotifications
         message: body_text,
         url: "#{Discourse.base_url}/#{payload[:post_url]}",
         topic_id: topic_id,
-        post_number: post_number
+        post_number: post_number,
+        dedupe_key: [type_key, topic_id, post_number, payload[:username]].join(":")
       }
-      self.send_notification(user, message)
+      self.send_notification(user, message, raise_on_transient: raise_on_transient)
     end
 
-    # Checks if the exact same notification was sent to the user very recently (5s),
-    # preventing duplicate job retries without dropping distinct answers or replies.
-    def self.already_sent?(user, message_hash = nil)
-      token = user&.custom_fields&.[](DiscourseFcmNotifications::PLUGIN_NAME)
-      return false if token.blank?
+    # Respects the user's own Discourse preference (Preferences > Notifications
+    # > push). The attribute only exists on recent Discourse versions.
+    def self.push_disabled_by_user?(user)
+      option = user&.user_option
+      return false unless option && option.respond_to?(:push_notification_level)
 
-      identifier = if message_hash.is_a?(Hash)
-                     "#{user.id}:#{message_hash[:url]}:#{message_hash[:title]}"
-                   else
-                     "#{user.id}:generic"
-                   end
-      fingerprint = Digest::MD5.hexdigest(identifier)
-      key = "fcm_last_sent_#{fingerprint}"
+      option.push_notification_level.to_s == "none"
+    end
+
+    def self.hide_excerpt?(type_key)
+      return false unless type_key.present?
+      return false unless SiteSetting.respond_to?(:fcm_notifications_hide_private_excerpt)
+
+      SiteSetting.fcm_notifications_hide_private_excerpt &&
+        PRIVATE_NOTIFICATION_TYPES.include?(type_key.to_sym)
+    end
+
+    # True when the same notification was already delivered to this device very
+    # recently. The guard is per token so one failed device does not cause the
+    # others to be skipped (or sent twice) on retry.
+    def self.already_sent?(token, message_hash)
+      identifier = message_hash[:dedupe_key].presence ||
+        "#{message_hash[:url]}:#{message_hash[:title]}"
+      key = "fcm_last_sent_#{Digest::MD5.hexdigest("#{token}:#{identifier}")}"
 
       if defined?(::Discourse) && ::Discourse.respond_to?(:redis) && ::Discourse.redis
         begin
-          last_sent = ::Discourse.redis.get(key)
-          if last_sent.present?
-            Rails.logger.info "FCM duplicate suppressed for #{user.username} (fingerprint: #{fingerprint})"
-            return true
-          end
-          ::Discourse.redis.setex(key, 5, Time.now.to_i.to_s)
+          return true if ::Discourse.redis.get(key).present?
           return false
         rescue StandardError => e
           Rails.logger.warn "FCM redis duplicate check failed: #{e.message}"
@@ -98,14 +126,26 @@ module ::DiscourseFcmNotifications
       end
 
       @msg_throttles ||= {}
-      last_time = @msg_throttles[fingerprint]
-      if last_time.is_a?(Time) && (last_time > 5.seconds.ago)
-        Rails.logger.info "FCM duplicate suppressed in-memory for #{user.username}"
-        true
-      else
-        @msg_throttles[fingerprint] = Time.now
-        false
+      last_time = @msg_throttles[key]
+      last_time.is_a?(Time) && last_time > DUPLICATE_WINDOW_SECONDS.seconds.ago
+    end
+
+    def self.mark_sent(token, message_hash)
+      identifier = message_hash[:dedupe_key].presence ||
+        "#{message_hash[:url]}:#{message_hash[:title]}"
+      key = "fcm_last_sent_#{Digest::MD5.hexdigest("#{token}:#{identifier}")}"
+
+      if defined?(::Discourse) && ::Discourse.respond_to?(:redis) && ::Discourse.redis
+        begin
+          ::Discourse.redis.setex(key, DUPLICATE_WINDOW_SECONDS, Time.now.to_i.to_s)
+          return
+        rescue StandardError => e
+          Rails.logger.warn "FCM redis duplicate mark failed: #{e.message}"
+        end
       end
+
+      @msg_throttles ||= {}
+      @msg_throttles[key] = Time.now
     end
 
     def self.confirm_subscribe(user)
@@ -139,110 +179,199 @@ module ::DiscourseFcmNotifications
       )
     end
 
-    # subscription should be a string automatically generated by the iPhone / Android phone
-    def self.subscribe(user, subscription)
+    # +subscription+ is the registration token generated by the iPhone / Android
+    # phone. The token is moved to +user+ if another account had it.
+    def self.subscribe(user, subscription, device_id: nil, platform: nil)
       subscription = subscription.to_s.strip
-      raise ArgumentError, "Invalid FCM token" if subscription.blank? || subscription.length > 4096
-      user.custom_fields[DiscourseFcmNotifications::PLUGIN_NAME] = subscription
-      user.save_custom_fields(true)
+      if subscription.blank? || subscription.length > DeviceToken::MAX_TOKEN_LENGTH
+        raise ArgumentError, "Invalid FCM token"
+      end
+
+      DeviceToken.register!(user, subscription, device_id: device_id, platform: platform)
+      clear_legacy_token(user)
     end
 
-    def self.unsubscribe(user)
+    def self.unsubscribe(user, token: nil, device_id: nil)
+      DeviceToken.unregister!(user, token: token, device_id: device_id)
+      clear_legacy_token(user) if token.blank? && device_id.blank?
+    end
+
+    # Device tokens of +user+. A token stored by the previous single-token
+    # implementation (user custom field) is moved into the table on first use.
+    def self.tokens_for(user)
+      return [] unless user
+
+      migrate_legacy_token(user)
+      DeviceToken.where(user_id: user.id).order(:id).pluck(:token)
+    end
+
+    def self.has_tokens?(user)
+      return false unless user
+
+      DeviceToken.where(user_id: user.id).exists? ||
+        user.custom_fields[DiscourseFcmNotifications::PLUGIN_NAME].present?
+    end
+
+    def self.migrate_legacy_token(user)
+      legacy = user.custom_fields[DiscourseFcmNotifications::PLUGIN_NAME].to_s.strip
+      return if legacy.blank?
+
+      # Do not steal the token if a newer registration already moved it.
+      unless DeviceToken.where(token: legacy).exists?
+        DeviceToken.register!(user, legacy) if legacy.length <= DeviceToken::MAX_TOKEN_LENGTH
+      end
+      clear_legacy_token(user)
+    end
+
+    def self.clear_legacy_token(user)
+      return if user.custom_fields[DiscourseFcmNotifications::PLUGIN_NAME].blank?
+
       user.custom_fields.delete(DiscourseFcmNotifications::PLUGIN_NAME)
       user.save_custom_fields(true)
     end
 
-    private
-
-    def self.send_notification(user, message_hash) 
-      token = user&.custom_fields&.[](DiscourseFcmNotifications::PLUGIN_NAME)
-      if token.blank?
-        Rails.logger.info "Skipping FCM notification for #{user&.username || 'unknown'} because token is blank"
-        return false
+    # Turns an FCM v1 error response into :invalid_token, :transient or :other.
+    def self.classify_failure(response)
+      code = response[:status_code].to_i
+      body = response[:body].to_s
+      error_code = begin
+        details = JSON.parse(body).dig("error", "details")
+        Array(details).map { |d| d.is_a?(Hash) ? d["errorCode"] : nil }.compact.first
+      rescue StandardError
+        nil
       end
 
-      if user && message_hash && (message_hash[:skip_throttle] || !self.already_sent?(user, message_hash))
-        Rails.logger.info "Sending a notification to #{user.username} about #{message_hash[:title]}"
-        filename = Rails.root.join("tmp", "discourse_fcm_notifications", "gcp_key.json").to_s
-        FileUtils.mkdir_p(File.dirname(filename))
-        if SiteSetting.fcm_notifications_google_json.present?
-          current_content = begin
-            File.read(filename) if File.exist?(filename)
-          rescue StandardError
-            nil
-          end
-          if current_content != SiteSetting.fcm_notifications_google_json
-            File.write(filename, SiteSetting.fcm_notifications_google_json, mode: "w", perm: 0o600)
-          end
-        end
-        raise "Error: Missing google json for push notifications" unless File.exist?(filename)
-        
-        fcm = FCM.new(SiteSetting.fcm_notifications_api_key, filename, SiteSetting.fcm_notifications_project_id)
+      if code == 404 || error_code == "UNREGISTERED" || error_code == "SENDER_ID_MISMATCH"
+        :invalid_token
+      elsif code == 400 && body =~ /registration token/i
+        :invalid_token
+      elsif code == 429 || code >= 500 || code == 0
+        :transient
+      else
+        :other
+      end
+    end
 
-        data_payload = {
-          "linked_obj_type" => 'link',
-          "linked_obj_data" => message_hash[:url].to_s,
-          "type" => message_hash[:type].to_s.presence || 'notification_tab',
-        }
-        if message_hash[:topic_id].present?
-          data_payload["topic_id"] = message_hash[:topic_id].to_s
+    def self.fcm_client
+      filename = Rails.root.join("tmp", "discourse_fcm_notifications", "gcp_key.json").to_s
+      FileUtils.mkdir_p(File.dirname(filename))
+      json = SiteSetting.fcm_notifications_google_json
+      if json.present?
+        current_content = begin
+          File.read(filename) if File.exist?(filename)
+        rescue StandardError
+          nil
         end
-        if message_hash[:post_number].present?
-          data_payload["post_number"] = message_hash[:post_number].to_s
-        end
+        File.write(filename, json, mode: "w", perm: 0o600) if current_content != json
+      end
+      raise "Error: Missing google json for push notifications" unless File.exist?(filename)
 
-        message = {
-          'token': token,
-          'data': data_payload,
-          'notification': {
-            title: message_hash[:title],
-            body: message_hash[:message],
+      FCM.new(SiteSetting.fcm_notifications_api_key, filename, SiteSetting.fcm_notifications_project_id)
+    end
+
+    # Unread count for the iOS app icon badge. Nil when the Discourse version
+    # does not expose it, in which case no badge is set.
+    def self.badge_count_for(user)
+      return nil unless user.respond_to?(:all_unread_notifications_count)
+
+      user.all_unread_notifications_count.to_i
+    rescue StandardError => e
+      Rails.logger.warn "FCM badge count failed for #{user&.username}: #{e.message}"
+      nil
+    end
+
+    def self.build_message(token, message_hash, badge: nil)
+      data_payload = {
+        "linked_obj_type" => 'link',
+        "linked_obj_data" => message_hash[:url].to_s,
+        "type" => message_hash[:type].to_s.presence || 'notification_tab',
+      }
+      data_payload["topic_id"] = message_hash[:topic_id].to_s if message_hash[:topic_id].present?
+      data_payload["post_number"] = message_hash[:post_number].to_s if message_hash[:post_number].present?
+
+      # Same topic => same group: Android replaces the earlier notification of
+      # the topic, iOS stacks them in one thread.
+      group = message_hash[:topic_id].present? ? "topic_#{message_hash[:topic_id]}" : nil
+      android_notification = {
+        "channel_id": "sorumatik_notifications_v4",
+        "sound": "default",
+        "default_sound": true,
+        "default_vibrate_timings": true,
+        "notification_priority": "PRIORITY_MAX"
+      }
+      android_notification["tag"] = group if group
+      aps = {
+        "sound": "default",
+        "interruption-level": "time-sensitive"
+      }
+      aps["thread-id"] = group if group
+      aps["badge"] = badge unless badge.nil?
+
+      {
+        'token': token,
+        'data': data_payload,
+        'notification': {
+          title: message_hash[:title],
+          body: message_hash[:message],
+        },
+        'android': {
+          "priority": "high",
+          "notification": android_notification
+        },
+        'apns': {
+          headers: {
+            "apns-priority": "10"
           },
-          'android': {
-            "priority": "high",
-            "notification": {
-              "channel_id": "sorumatik_notifications_v4",
-              "sound": "default",
-              "default_sound": true,
-              "default_vibrate_timings": true,
-              "notification_priority": "PRIORITY_MAX"
-            }
-          },
-          'apns': {
-            headers: {
-              "apns-priority": "10"
-            },
-            payload: {
-              aps: {
-                "sound": "default",
-                "interruption-level": "time-sensitive"
-              }
-            }
-          },
-          'fcm_options': {
-            "analytics_label": "Label"
+          payload: {
+            aps: aps
           }
+        },
+        'fcm_options': {
+          "analytics_label": "Label"
         }
+      }
+    end
 
-        response = fcm.send_v1(message)
+    def self.send_notification(user, message_hash, raise_on_transient: false)
+      tokens = tokens_for(user)
+      if tokens.empty?
+        Rails.logger.info "Skipping FCM notification for #{user&.username || 'unknown'} because no device token is registered"
+        return false
+      end
+      return false unless message_hash
+
+      fcm = fcm_client
+      badge = badge_count_for(user)
+      delivered = false
+      transient_failures = 0
+
+      tokens.each do |token|
+        next if !message_hash[:skip_throttle] && already_sent?(token, message_hash)
+
+        response = fcm.send_v1(build_message(token, message_hash, badge: badge))
         if response[:response] == 'success'
-          Rails.logger.info "Successfully sent push notification about #{message_hash[:title]} to token " + token.to_s
-          return true
+          mark_sent(token, message_hash)
+          delivered = true
+          next
+        end
+
+        case classify_failure(response)
+        when :invalid_token
+          Rails.logger.warn "FCM token no longer valid for #{user.username}; removing it (code #{response[:status_code]})"
+          DeviceToken.where(user_id: user.id, token: token).delete_all
+        when :transient
+          transient_failures += 1
+          Rails.logger.warn "FCM temporary failure for #{user.username}, code #{response[:status_code]}"
         else
-          if response[:status_code] == 400
-            txt = "ERROR: push notification was malformed. Tried to send notif about #{message_hash[:title]} to token " 
-            txt += token.to_s + " and body response was: " + response[:body].to_s
-            Rails.logger.error txt
-          elsif response[:status_code] == 404
-            Rails.logger.error "Possible error: push notification was sent to a token that is no longer valid. Unsubscribing user " + token.to_s
-            self.unsubscribe user
-          else 
-            Rails.logger.error "ERROR: something was wrong with the push notification, code #{response[:status_code]}. Body: " + response[:body].to_s
-          end
-          return false
-        end  
-      end    
+          Rails.logger.error "FCM push rejected for #{user.username}, code #{response[:status_code]}. Body: #{response[:body]}"
+        end
+      end
+
+      if transient_failures > 0 && raise_on_transient
+        raise TransientDeliveryError, "FCM temporary failure for user #{user.id} (#{transient_failures} device(s))"
+      end
+
+      delivered
     end
   end
-
 end

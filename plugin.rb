@@ -62,8 +62,11 @@ after_initialize do
           def execute(args)
             return unless SiteSetting.fcm_notifications_enabled?
 
-            user = User.find(args[:user_id])
-            DiscourseFcmNotifications::Pusher.push(user, args[:payload])
+            user = User.find_by(id: args[:user_id])
+            return if user.blank?
+
+            # Transient FCM failures raise so Sidekiq retries the delivery.
+            DiscourseFcmNotifications::Pusher.push(user, args[:payload], raise_on_transient: true)
           end
         end
       end
@@ -71,8 +74,7 @@ after_initialize do
 
     DiscourseEvent.on(:push_notification) do |user, payload|
       if SiteSetting.fcm_notifications_enabled?
-        token = user&.custom_fields&.[](DiscourseFcmNotifications::PLUGIN_NAME)
-        next if token.blank?
+        next unless DiscourseFcmNotifications::Pusher.has_tokens?(user)
         Jobs.enqueue(:send_fcm_notifications, user_id: user.id, payload: payload)
       end
     end

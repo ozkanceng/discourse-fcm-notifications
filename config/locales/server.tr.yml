@@ -8,6 +8,7 @@ tr:
     ai_answer_failed: 'AI yanıtı oluşturulamadı.'
     confirm_title: 'Bildirimler - %{site_title}'
     confirm_body: 'Anlık bildirimler başarıyla etkinleştirildi!'
+    private_body: 'Yeni bir özel mesajınız var.'
     subscribe_error: 'Abone olunamadı. Cihaz anahtarınız doğru mu?'
     the_same: 'Yeni anahtar eskisi ile aynı, işlem yapılmadı.'
     popup:

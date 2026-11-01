@@ -2,6 +2,8 @@ DiscourseFcmNotifications::Engine.routes.draw do
   get '/automatic_subscribe' => 'push#automatic_subscribe'
   post '/subscribe' => 'push#subscribe'
   post '/unsubscribe' => 'push#unsubscribe'
+  post '/devices' => 'push#register_device'
+  delete '/devices' => 'push#unregister_device'
 end
 
 Discourse::Application.routes.draw do

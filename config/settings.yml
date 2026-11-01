@@ -8,6 +8,9 @@ plugins:
     default: ''
   fcm_notifications_google_json:
     default: ''
+  fcm_notifications_hide_private_excerpt:
+    default: true
+    description: 'Do not put private message text into push notification bodies'
   sorumatik_ai_live_streaming_enabled:
     default: false
     client: true

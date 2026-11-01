@@ -8,6 +8,7 @@ en:
     ai_answer_failed: 'AI answer could not be generated.'
     confirm_title: 'App Notifications - %{site_title}'
     confirm_body: 'App notifications have been enabled!'
+    private_body: 'You have a new private message.'
     subscribe_error: 'Could not subscribe. Is your device key correct?'
     the_same: 'Your new key == Your old key, we will do nothing'
     popup:
