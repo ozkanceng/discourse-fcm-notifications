@@ -15,6 +15,8 @@ module DiscourseFcmNotifications
     before_action :ensure_logged_in, except: [:ssv]
 
     REWARD_CUSTOM_DATA = 'blackboard'
+    # Brain Energy rewards (BrainEnergyService) are granted by the Sorumatik API.
+    ENERGY_CUSTOM_DATA = 'energy'
 
     def quota
       RateLimiter.new(current_user, 'sorumatik_bb_quota', 60, 1.minute).performed!
@@ -31,12 +33,19 @@ module DiscourseFcmNotifications
     def ssv
       return render json: { status: 'disabled' } unless SiteSetting.blackboard_admob_ssv_enabled
       params_hash = self.class.verifier.verify!(request.query_string)
-      return render json: { status: 'ignored' } unless params_hash['custom_data'] == REWARD_CUSTOM_DATA
+      custom = params_hash['custom_data']
+      return render json: { status: 'ignored' } unless [REWARD_CUSTOM_DATA, ENERGY_CUSTOM_DATA].include?(custom)
 
       user = User.find_by_username(params_hash['user_id'].to_s)
       transaction_id = params_hash['transaction_id'].to_s
       unless user && transaction_id.match?(/\A[A-Za-z0-9]{8,128}\z/)
         return render json: { status: 'ignored' }
+      end
+      if custom == ENERGY_CUSTOM_DATA
+        return render json: { status: 'ignored' } unless SorumatikApi.configured?
+        result = SorumatikApi.forward_rewarded_ad(user.id, transaction_id)
+        Rails.logger.info("energy rewarded_grant user=#{user.id} result=#{result}")
+        return render json: { status: result.to_s }
       end
       result = BlackboardGeneration.grant_reward!(user_id: user.id, transaction_id: transaction_id)
       Rails.logger.info("blackboard rewarded_grant user=#{user.id} result=#{result}")
