@@ -38,7 +38,9 @@ module DiscourseFcmNotifications
     LUA
 
     attr_reader :lock_key, :quota_key, :reset_at
-    def initialize(topic_id:, language:, version:, fingerprint:, user_id:)
+    # [base_limit] comes from BlackboardLimits (tier of this request).
+    def initialize(topic_id:, language:, version:, fingerprint:, user_id:, base_limit: nil)
+      @base_limit = base_limit
       @lock_key = "sorumatik:blackboard:#{topic_id}:#{language}:#{version}:#{fingerprint}"
       @user_id = user_id
       now = Time.now.utc
@@ -74,8 +76,12 @@ module DiscourseFcmNotifications
     end
 
     # Daily generations: the base limit plus today's rewarded extras.
+    def base_limit
+      (@base_limit || SiteSetting.blackboard_daily_limit).to_i
+    end
+
     def daily_limit
-      SiteSetting.blackboard_daily_limit + rewarded_granted
+      base_limit + rewarded_granted
     end
 
     def reserve
@@ -100,7 +106,7 @@ module DiscourseFcmNotifications
     def quota
       Discourse.redis.zremrangebyscore(quota_key, '-inf', Time.now.to_i)
       granted = rewarded_granted
-      limit = SiteSetting.blackboard_daily_limit + granted
+      limit = base_limit + granted
       used = Discourse.redis.zcard(quota_key)
       {
         limit: limit,

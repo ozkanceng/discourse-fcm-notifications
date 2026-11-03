@@ -21,6 +21,8 @@ RSpec.describe 'Kara Tahta v5 server endpoints' do
     SiteSetting.fcm_notifications_enabled = true
     SiteSetting.blackboard_premium_groups = ''
     SiteSetting.blackboard_daily_limit = 2
+    SiteSetting.blackboard_free_daily_limit = 1
+    SiteSetting.blackboard_premium_daily_limit = 10
     SiteSetting.blackboard_rewarded_daily_limit = 2
     SiteSetting.blackboard_free_help_daily_limit = 2
     sign_in(user)
@@ -62,11 +64,26 @@ RSpec.describe 'Kara Tahta v5 server endpoints' do
 
   describe 'quota' do
     it 'reports used, remaining, rewarded and tier' do
-      get '/sorumatik/blackboard-quota'
+      get '/sorumatik/blackboard-quota', headers: { 'X-Sorumatik-Tier' => 'free' }
       expect(response.status).to eq(200)
       body = response.parsed_body
-      expect(body).to include('limit' => 2, 'used' => 0, 'remaining' => 2, 'rewarded_available' => 2, 'tier' => 'free')
+      expect(body).to include('limit' => 1, 'used' => 0, 'remaining' => 1, 'rewarded_available' => 2, 'tier' => 'free')
       expect(body['resets_at']).to be_present
+    end
+
+    it 'gives free users one video a day and premium apps ten' do
+      post "#{path}/generate", params: identity, headers: { 'X-Sorumatik-Tier' => 'free' }
+      expect(response.status).to eq(202)
+      post "/sorumatik/blackboard-solutions/#{Fabricate(:topic).id}/generate", params: identity,
+        headers: { 'X-Sorumatik-Tier' => 'free' }
+      expect(response.status).to eq(429)
+      get '/sorumatik/blackboard-quota', headers: { 'X-Sorumatik-Tier' => 'premium' }
+      expect(response.parsed_body).to include('limit' => 10, 'remaining' => 9, 'tier' => 'premium')
+    end
+
+    it 'keeps the old limit for apps that do not send their tier' do
+      get '/sorumatik/blackboard-quota'
+      expect(response.parsed_body).to include('limit' => 2, 'tier' => 'legacy')
     end
 
     it 'counts a verified rewarded ad once per transaction and caps it per day' do
@@ -75,8 +92,8 @@ RSpec.describe 'Kara Tahta v5 server endpoints' do
       expect(grant.call('tx1')).to eq(:duplicate)
       expect(grant.call('tx2')).to eq(:granted)
       expect(grant.call('tx3')).to eq(:limit_reached)
-      get '/sorumatik/blackboard-quota'
-      expect(response.parsed_body).to include('limit' => 4, 'rewarded_available' => 0)
+      get '/sorumatik/blackboard-quota', headers: { 'X-Sorumatik-Tier' => 'free' }
+      expect(response.parsed_body).to include('limit' => 3, 'rewarded_available' => 0)
     end
 
     it 'requires a login' do

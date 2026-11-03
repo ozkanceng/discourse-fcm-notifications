@@ -18,8 +18,10 @@ module DiscourseFcmNotifications
 
     def quota
       RateLimiter.new(current_user, 'sorumatik_bb_quota', 60, 1.minute).performed!
-      lease = BlackboardGeneration.new(topic_id: 0, language: 'tr', version: 5, fingerprint: 'quota', user_id: current_user.id)
-      render json: lease.quota.merge(tier: tier, help: help_status)
+      limits = BlackboardLimits.for_request(current_user, request.headers['X-Sorumatik-Tier'])
+      lease = BlackboardGeneration.new(topic_id: 0, language: 'tr', version: 5, fingerprint: 'quota',
+        user_id: current_user.id, base_limit: limits[:limit])
+      render json: lease.quota.merge(tier: limits[:tier], help: help_status)
     end
 
     # AdMob calls this URL (configured on the rewarded ad unit) after a user
@@ -81,18 +83,10 @@ module DiscourseFcmNotifications
 
     private
 
-    def tier
-      return 'staff' if current_user.staff?
-      premium_member? ? 'premium' : 'free'
-    end
-
-    def premium_member?
-      groups = SiteSetting.blackboard_premium_groups.to_s.split('|').reject(&:blank?)
-      groups.any? && current_user.groups.where(name: groups).exists?
-    end
-
+    # Help stays unlimited only for verified premium: a claimed tier
+    # header must not unlock more than the free allowance.
     def unlimited_help?
-      current_user.staff? || premium_member?
+      BlackboardLimits.verified_premium?(current_user)
     end
 
     def help_status

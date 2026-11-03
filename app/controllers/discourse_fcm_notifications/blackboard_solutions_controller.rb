@@ -233,7 +233,8 @@ module DiscourseFcmNotifications
     def generation(topic)
       BlackboardGeneration.new(topic_id: topic.id, language: language,
         version: requested_schema_version, fingerprint: params[:source_fingerprint].to_s,
-        user_id: current_user.id)
+        user_id: current_user.id,
+        base_limit: BlackboardLimits.for_request(current_user, request.headers['X-Sorumatik-Tier'])[:limit])
     end
 
     def ready_solution(topic)
