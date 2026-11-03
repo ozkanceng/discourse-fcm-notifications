@@ -51,3 +51,32 @@ plugins:
     default: 5
     min: 1
     max: 100
+    description: 'Daily Kara Tahta videos for app builds that do not send their tier (before the free/premium split)'
+  blackboard_free_daily_limit:
+    default: 1
+    min: 0
+    max: 100
+    description: 'Daily Kara Tahta videos for free users (apps that send X-Sorumatik-Tier)'
+  blackboard_premium_daily_limit:
+    default: 10
+    min: 1
+    max: 100
+    description: 'Daily Kara Tahta videos for premium users (blackboard_premium_groups, staff or apps reporting premium)'
+  blackboard_rewarded_daily_limit:
+    default: 2
+    min: 0
+    max: 10
+    description: 'Extra Kara Tahta videos a user can unlock per UTC day with verified rewarded ads'
+  blackboard_admob_ssv_enabled:
+    default: false
+    description: 'Accept AdMob rewarded-ad callbacks at /sorumatik/blackboard-rewarded/ssv (set this URL on the rewarded ad unit first)'
+  blackboard_free_help_daily_limit:
+    default: 2
+    min: 0
+    max: 50
+    description: 'Free "burayi anlamadim" questions per user and UTC day for non-premium users'
+  blackboard_share_daily_limit:
+    default: 30
+    min: 1
+    max: 500
+    description: 'Kara Tahta share links a user can create per day'
