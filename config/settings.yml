@@ -67,6 +67,11 @@ plugins:
     min: 0
     max: 10
     description: 'Extra Kara Tahta videos a user can unlock per UTC day with verified rewarded ads'
+  sorumatik_api_receipt_secret:
+    default: ''
+    secret: true
+    client: false
+    description: 'Shared with the Sorumatik API (SORUMATIK_RECEIPT_SECRET): checks charge receipts of API-charged Kara Tahta videos'
   blackboard_admob_ssv_enabled:
     default: false
     description: 'Accept AdMob rewarded-ad callbacks at /sorumatik/blackboard-rewarded/ssv (set this URL on the rewarded ad unit first)'

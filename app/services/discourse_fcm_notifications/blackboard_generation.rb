@@ -39,13 +39,16 @@ module DiscourseFcmNotifications
 
     attr_reader :lock_key, :quota_key, :reset_at
     # [base_limit] comes from BlackboardLimits (tier of this request).
-    def initialize(topic_id:, language:, version:, fingerprint:, user_id:, base_limit: nil)
+    # api_quota: the Sorumatik API charged this generation, so only the source
+    # lock is taken here; its slots go to a separate set that is never counted.
+    def initialize(topic_id:, language:, version:, fingerprint:, user_id:, base_limit: nil, api_quota: false)
       @base_limit = base_limit
       @lock_key = "sorumatik:blackboard:#{topic_id}:#{language}:#{version}:#{fingerprint}"
       @user_id = user_id
       now = Time.now.utc
       @reset_at = Time.utc(now.year, now.month, now.day) + 86_400
-      @quota_key = "sorumatik:blackboard:quota:#{user_id}:#{now.strftime('%Y-%m-%d')}"
+      @api_quota = api_quota
+      @quota_key = "sorumatik:blackboard:#{api_quota ? 'apiquota' : 'quota'}:#{user_id}:#{now.strftime('%Y-%m-%d')}"
       @extra_key = self.class.extra_key(user_id, now)
     end
 
@@ -80,12 +83,23 @@ module DiscourseFcmNotifications
       (@base_limit || SiteSetting.blackboard_daily_limit).to_i
     end
 
+    def api_quota?
+      @api_quota
+    end
+
+    # API-charged generations are limited by the API, not here.
     def daily_limit
-      base_limit + rewarded_granted
+      @api_quota ? 1_000_000 : base_limit + rewarded_granted
+    end
+
+    # Tokens of API-charged reservations carry an "api" part, so storing one
+    # always needs a charge receipt, whatever headers the store call sends.
+    def self.api_token?(token)
+      token.to_s.split(':')[2] == 'api'
     end
 
     def reserve
-      token = "#{@user_id}:#{reset_at.to_i}:#{SecureRandom.hex(24)}"
+      token = "#{@user_id}:#{reset_at.to_i}:#{@api_quota ? 'api:' : ''}#{SecureRandom.hex(24)}"
       result = Discourse.redis.eval(RESERVE, keys: [lock_key, quota_key], argv: [Time.now.to_i, daily_limit, token, LEASE_SECONDS, reset_at.to_i + LEASE_SECONDS])
       [result, result == 'owner' ? token : nil]
     end
@@ -99,7 +113,8 @@ module DiscourseFcmNotifications
       reserved_reset = Integer(token.split(':')[1], exception: false)
       return false unless reserved_reset
       reserved_date = Time.at(reserved_reset - 86_400).utc.strftime('%Y-%m-%d')
-      reserved_key = "sorumatik:blackboard:quota:#{@user_id}:#{reserved_date}"
+      namespace = self.class.api_token?(token) ? 'apiquota' : 'quota'
+      reserved_key = "sorumatik:blackboard:#{namespace}:#{@user_id}:#{reserved_date}"
       Discourse.redis.eval(FINISH, keys: [lock_key, reserved_key], argv: [token, commit ? 'commit' : 'cancel', reserved_reset]).to_i == 1
     end
 

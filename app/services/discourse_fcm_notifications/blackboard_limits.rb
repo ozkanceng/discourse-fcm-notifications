@@ -3,8 +3,8 @@
 module DiscourseFcmNotifications
   # Daily Kara Tahta video limit for a request.
   #
-  # Verified premium (a blackboard_premium_groups member) and staff get the
-  # premium limit. Store purchases are only known on the device, so new apps
+  # Verified premium (a blackboard_premium_groups member, a purchase the
+  # Sorumatik API verified) and staff get the premium limit. Store purchases are only known on the device, so new apps
   # send their tier in `X-Sorumatik-Tier` (free | premium): free gets
   # blackboard_free_daily_limit, premium blackboard_premium_daily_limit.
   # Requests without the header (app builds before the split) keep
@@ -32,7 +32,9 @@ module DiscourseFcmNotifications
       return false unless user
       return true if user.staff?
       groups = SiteSetting.blackboard_premium_groups.to_s.split('|').reject(&:blank?)
-      groups.any? && user.groups.where(name: groups).exists?
+      return true if groups.any? && user.groups.where(name: groups).exists?
+      # A store purchase the Sorumatik API verified (cached 5 minutes).
+      !!(defined?(SorumatikApi) && user.respond_to?(:id) && SorumatikApi.pro?(user.id))
     end
   end
 end

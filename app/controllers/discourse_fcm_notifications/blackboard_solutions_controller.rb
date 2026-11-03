@@ -73,6 +73,12 @@ module DiscourseFcmNotifications
       unless valid_fingerprint? && lease.owner?(params[:generation_token].to_s)
         return render json: { error: 'generation_ownership_required' }, status: :conflict
       end
+      # A slot reserved without counting (the API charged it) is stored only with the API's receipt.
+      if BlackboardGeneration.api_token?(params[:generation_token]) &&
+         !SorumatikApi.receipt_valid?(params[:charge_receipt].to_s, user_id: current_user.id, topic_id: topic.id)
+        lease.finish(params[:generation_token].to_s, commit: false)
+        return render json: { error: 'charge_receipt_required' }, status: :payment_required
+      end
       payload = params[:solution]
       return render json: { error: 'invalid_solution' }, status: :unprocessable_entity unless payload.respond_to?(:to_h)
       payload = payload.respond_to?(:to_unsafe_h) ? payload.to_unsafe_h : payload.to_h
@@ -234,7 +240,13 @@ module DiscourseFcmNotifications
       BlackboardGeneration.new(topic_id: topic.id, language: language,
         version: requested_schema_version, fingerprint: params[:source_fingerprint].to_s,
         user_id: current_user.id,
-        base_limit: BlackboardLimits.for_request(current_user, request.headers['X-Sorumatik-Tier'])[:limit])
+        base_limit: BlackboardLimits.for_request(current_user, request.headers['X-Sorumatik-Tier'])[:limit],
+        api_quota: api_quota?)
+    end
+
+    # New apps whose Kara Tahta is charged by the Sorumatik API (X-Sorumatik-Quota: api).
+    def api_quota?
+      request.headers['X-Sorumatik-Quota'].to_s == 'api' && SorumatikApi.configured?
     end
 
     def ready_solution(topic)

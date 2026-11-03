@@ -65,7 +65,8 @@ module DiscourseFcmNotifications
 
     def self.enabled?
       SiteSetting.respond_to?(:blackboard_tts_enabled?) && SiteSetting.blackboard_tts_enabled? &&
-        SiteSetting.respond_to?(:blackboard_gemini_api_key) && SiteSetting.blackboard_gemini_api_key.present?
+        (SorumatikApi.configured? ||
+         (SiteSetting.respond_to?(:blackboard_gemini_api_key) && SiteSetting.blackboard_gemini_api_key.present?))
     end
     private_class_method :enabled?
 
@@ -137,6 +138,11 @@ module DiscourseFcmNotifications
     private_class_method :parallel_map
 
     def self.request_pcm(text, model:, voice:, language:)
+      # Through the Sorumatik API when configured: one Gemini key, its capacity and metrics.
+      if SorumatikApi.configured?
+        instruction = "Read only the following explanation in #{bcp47(language)}, naturally, as a patient teacher. Pause at sentence boundaries and pronounce mathematical terms clearly: #{text}"
+        return extract_clean_pcm(SorumatikApi.tts_wav(instruction, voice: voice.presence || 'Kore'))
+      end
       api_key = SiteSetting.blackboard_gemini_api_key
       raise 'Gemini API key missing' if api_key.blank?
 
