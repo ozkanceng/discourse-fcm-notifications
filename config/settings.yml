@@ -51,3 +51,21 @@ plugins:
     default: 5
     min: 1
     max: 100
+  blackboard_rewarded_daily_limit:
+    default: 2
+    min: 0
+    max: 10
+    description: 'Extra Kara Tahta videos a user can unlock per UTC day with verified rewarded ads'
+  blackboard_admob_ssv_enabled:
+    default: false
+    description: 'Accept AdMob rewarded-ad callbacks at /sorumatik/blackboard-rewarded/ssv (set this URL on the rewarded ad unit first)'
+  blackboard_free_help_daily_limit:
+    default: 2
+    min: 0
+    max: 50
+    description: 'Free "burayi anlamadim" questions per user and UTC day for non-premium users'
+  blackboard_share_daily_limit:
+    default: 30
+    min: 1
+    max: 500
+    description: 'Kara Tahta share links a user can create per day'

@@ -77,7 +77,8 @@ module DiscourseFcmNotifications
       return render json: { error: 'invalid_solution' }, status: :unprocessable_entity unless payload.respond_to?(:to_h)
       payload = payload.respond_to?(:to_unsafe_h) ? payload.to_unsafe_h : payload.to_h
 
-      payload_version = payload['version'].to_i
+      # v5 solutions carry `schema_version`; v1-v3 carry `version`.
+      payload_version = (v5? ? payload['schema_version'] : payload['version']).to_i
       return render json: { error: 'invalid_solution' }, status: :unprocessable_entity unless payload_version == requested_schema_version
       record = BlackboardSolution.new(
         topic_id: topic.id,
@@ -94,7 +95,9 @@ module DiscourseFcmNotifications
       payload.delete('audio')
       payload.delete('audio_tracks')
       payload['language'] = language
-      payload['audio'] = { 'status' => 'pending', 'tracks' => [] }
+      # v5 narration is synthesized per sentence by the app through the TTS
+      # proxy, so no server audio job runs for it.
+      payload['audio'] = v5? ? { 'status' => 'client', 'tracks' => [] } : { 'status' => 'pending', 'tracks' => [] }
       record.generation_digest = digest
       record.generated_by_id = current_user.id
       record.solution_json = payload
@@ -112,7 +115,7 @@ module DiscourseFcmNotifications
       unless record.persisted?
         return render json: { error: 'generation_ownership_required' }, status: :conflict
       end
-      Jobs.enqueue(:blackboard_audio, solution_id: record.id)
+      Jobs.enqueue(:blackboard_audio, solution_id: record.id) unless v5?
       Rails.logger.info("blackboard generation_stored topic=#{topic.id} user=#{current_user.id}")
       render json: { available: true, solution: record.solution_json, quota: lease.quota }, status: :created
     rescue ActiveRecord::RecordNotUnique
@@ -129,8 +132,18 @@ module DiscourseFcmNotifications
         status: 'ready',
       ).order(created_at: :desc).first
       return render json: { error: 'solution_not_found' }, status: :not_found unless solution
+      # Files land in public uploads: only the student who generated this
+      # solution (or staff) may add its narration.
+      unless current_user.staff? || solution.generated_by_id == current_user.id
+        return render json: { error: 'generation_ownership_required' }, status: :forbidden
+      end
+      RateLimiter.new(current_user, 'sorumatik_bb_audio_upload', 60, 1.minute).performed!
 
-      step_index = params[:step_index].to_i
+      step_index = Integer(params[:step_index], exception: false)
+      total_steps = solution.solution_json['steps']&.size.to_i
+      unless step_index && step_index >= 0 && step_index < [total_steps, 40].min
+        return render json: { error: 'invalid_step_index' }, status: :unprocessable_entity
+      end
       file = params[:file]
       duration_ms = params[:duration_ms].to_i
       format = params[:format].to_s.presence || (file.respond_to?(:original_filename) && file.original_filename.end_with?('.wav') ? 'wav' : 'mp3')
@@ -138,6 +151,10 @@ module DiscourseFcmNotifications
       voice = params[:voice].to_s.presence || 'Kore'
 
       return render json: { error: 'invalid_audio_file' }, status: :unprocessable_entity unless file && file.respond_to?(:read)
+      bytes = file.read(MAX_AUDIO_BYTES + 1).to_s
+      unless bytes.bytesize.between?(64, MAX_AUDIO_BYTES) && self.class.audio_signature_ok?(bytes, format)
+        return render json: { error: 'invalid_audio_file' }, status: :unprocessable_entity
+      end
 
       source = solution.source_fingerprint.presence || topic.id.to_s
       directory = Rails.root.join('public', 'uploads', 'blackboard_audio', source)
@@ -145,7 +162,7 @@ module DiscourseFcmNotifications
 
       filename = "step_#{step_index}_#{Digest::SHA256.hexdigest(file.original_filename.to_s + step_index.to_s)[0, 12]}.#{format}"
       target_path = directory.join(filename)
-      File.binwrite(target_path, file.read)
+      File.binwrite(target_path, bytes)
 
       url = "#{Discourse.base_url}/uploads/blackboard_audio/#{source}/#{filename}"
 
@@ -184,7 +201,22 @@ module DiscourseFcmNotifications
       }
     end
 
+    MAX_AUDIO_BYTES = 4 * 1024 * 1024
+
+    # WAV starts with RIFF....WAVE; MP3 with an ID3 tag or an MPEG frame sync.
+    def self.audio_signature_ok?(bytes, format)
+      if format == 'wav'
+        bytes.start_with?('RIFF') && bytes.byteslice(8, 4) == 'WAVE'
+      else
+        bytes.start_with?('ID3') || (bytes.getbyte(0) == 0xFF && (bytes.getbyte(1).to_i & 0xE0) == 0xE0)
+      end
+    end
+
     private
+
+    def v5?
+      requested_schema_version == 5
+    end
 
     def ensure_blackboard_access
       return if current_user&.staff? || current_user&.admin? || current_user&.username == 'dersnotu'
@@ -205,6 +237,14 @@ module DiscourseFcmNotifications
     end
 
     def ready_solution(topic)
+      if v5?
+        # Only an exact source match: a different fingerprint means the
+        # question, language or prompt changed.
+        fingerprint = params[:source_fingerprint].to_s
+        return nil if fingerprint.blank?
+        return BlackboardSolution.find_by(topic_id: topic.id, language: language, schema_version: 5,
+          status: 'ready', source_fingerprint: fingerprint)
+      end
       if requested_schema_version == 3
         requested_fingerprint = params[:source_fingerprint].to_s
         if requested_fingerprint.present?
@@ -248,8 +288,12 @@ module DiscourseFcmNotifications
       solution
     end
 
+    # Prompt 7+ is the v5 engine (kSolutionPromptVersion in the app). Older
+    # apps send 2 or 3 and never see v5 rows, which they would reject.
     def requested_schema_version
-      params[:prompt_version].to_i == 3 ? 3 : 2
+      prompt = params[:prompt_version].to_i
+      return 5 if prompt >= 7
+      prompt == 3 ? 3 : 2
     end
 
     def language

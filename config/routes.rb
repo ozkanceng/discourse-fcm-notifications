@@ -25,5 +25,10 @@ Discourse::Application.routes.draw do
     post '/blackboard-solutions/:topic_id/generate' => 'blackboard_solutions#generate'
     post '/blackboard-solutions/:topic_id' => 'blackboard_solutions#store'
     post '/blackboard-solutions/:topic_id/audio' => 'blackboard_solutions#upload_audio'
+    get '/blackboard-quota' => 'blackboard_extras#quota'
+    get '/blackboard-rewarded/ssv' => 'blackboard_extras#ssv'
+    post '/blackboard-help' => 'blackboard_extras#help'
+    post '/blackboard-share' => 'blackboard_extras#share'
+    get '/blackboard-share/:token' => 'blackboard_extras#share_show'
   end
 end
