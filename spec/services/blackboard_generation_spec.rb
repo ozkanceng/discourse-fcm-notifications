@@ -35,6 +35,22 @@ RSpec.describe DiscourseFcmNotifications::BlackboardGeneration do
     expect(lease.owner?(replacement)).to eq(true)
   end
 
+  it 'lets the same user take over a lease they could not cancel' do
+    _, stale = lease.reserve
+    status, token = lease.reserve
+    expect(status).to eq('owner')
+    expect(token).not_to eq(stale)
+    expect(lease.owner?(stale)).to eq(false)
+    expect(lease.owner?(token)).to eq(true)
+    expect(lease.quota[:used]).to eq(1)
+  end
+
+  it 'keeps another user out of a live lease' do
+    lease.reserve
+    other = described_class.new(**identity.merge(user_id: user.id + 1))
+    expect(other.reserve.first).to eq('pending')
+  end
+
   it 'charges once on completion and rejects repeated completion' do
     _, token = lease.reserve
     expect(lease.finish(token, commit: true)).to eq(true)
