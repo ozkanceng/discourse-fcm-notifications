@@ -48,7 +48,7 @@ plugins:
     type: list
     description: 'Verified paid Premium group names. When empty, all authenticated users have access (subject to daily limit).'
   blackboard_daily_limit:
-    default: 5
+    default: 10
     min: 1
     max: 100
     description: 'Daily Kara Tahta videos for app builds that do not send their tier (before the free/premium split)'

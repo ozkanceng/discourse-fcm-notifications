@@ -121,7 +121,10 @@ module DiscourseFcmNotifications
       unless record.persisted?
         return render json: { error: 'generation_ownership_required' }, status: :conflict
       end
-      Jobs.enqueue(:blackboard_audio, solution_id: record.id) unless v5?
+      unless v5?
+        Jobs.enqueue(:blackboard_audio, solution_id: record.id)
+        mark_topic_has_solution(topic)
+      end
       Rails.logger.info("blackboard generation_stored topic=#{topic.id} user=#{current_user.id}")
       render json: { available: true, solution: record.solution_json, quota: lease.quota }, status: :created
     rescue ActiveRecord::RecordNotUnique
@@ -303,10 +306,18 @@ module DiscourseFcmNotifications
 
     # Prompt 7+ is the v5 engine (kSolutionPromptVersion in the app). Older
     # apps send 2 or 3 and never see v5 rows, which they would reject.
+    # The flag only drives "video ready" buttons, so a failed write must never
+    # fail a solution that is already saved.
+    def mark_topic_has_solution(topic)
+      topic.upsert_custom_fields(BLACKBOARD_SOLUTION_FIELD => true)
+    rescue StandardError => e
+      Rails.logger.warn("blackboard solution flag failed topic=#{topic.id}: #{e.class}")
+    end
+
     def requested_schema_version
       prompt = params[:prompt_version].to_i
       return 5 if prompt >= 7
-      prompt == 3 ? 3 : 2
+      prompt >= 3 ? 3 : 2
     end
 
     def language
