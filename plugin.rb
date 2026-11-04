@@ -69,6 +69,12 @@ after_initialize do
   end
 
   if jobs_ready
+    begin
+      require_dependency File.expand_path("app/jobs/regular/backfill_blackboard_solution_flag", __dir__)
+    rescue LoadError, NameError => e
+      Rails.logger.error("discourse-fcm-notifications backfill disabled: #{e.class}: #{e.message}")
+    end
+
     module ::Jobs
       unless const_defined?(:SendFcmNotifications, false)
         class SendFcmNotifications < ::Jobs::Base
