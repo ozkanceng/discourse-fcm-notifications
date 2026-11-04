@@ -17,6 +17,7 @@ gem 'fcm', '1.0.8'
 
 module ::DiscourseFcmNotifications
   PLUGIN_NAME = "discourse-fcm-notifications"
+  BLACKBOARD_SOLUTION_FIELD = "has_blackboard_solution"
   #autoload :Pusher, "#{Rails.root}/plugins/discourse-fcm-notifications/services/discourse_fcm_notifications/pusher"
 end
 
@@ -39,6 +40,18 @@ after_initialize do
 
   User.register_custom_field_type(DiscourseFcmNotifications::PLUGIN_NAME, :json)
   allow_staff_user_custom_field DiscourseFcmNotifications::PLUGIN_NAME
+
+  # Lets lists, the topic page and the web button know a recorded solution
+  # exists without exposing the solution itself.
+  solution_field = DiscourseFcmNotifications::BLACKBOARD_SOLUTION_FIELD
+  Topic.register_custom_field_type(solution_field, :boolean)
+  add_preloaded_topic_list_custom_field(solution_field)
+  add_to_serializer(:topic_list_item, :has_blackboard_solution) do
+    !!object.custom_fields[solution_field]
+  end
+  add_to_serializer(:topic_view, :has_blackboard_solution) do
+    !!object.topic.custom_fields[solution_field]
+  end
 
   # Discourse does not guarantee that Jobs::Base is loaded while plugin.rb is
   # being evaluated. Defer both plugin job files until the application has

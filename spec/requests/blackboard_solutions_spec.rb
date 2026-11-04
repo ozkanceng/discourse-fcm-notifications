@@ -45,6 +45,31 @@ RSpec.describe DiscourseFcmNotifications::BlackboardSolutionsController do
     expect(response.parsed_body.dig('quota', 'remaining')).to eq(4)
   end
 
+  it 'stores a solution from the current app and flags the topic' do
+    group.add(user)
+    current_app = identity.merge(prompt_version: 6)
+    post "#{path}/generate", params: current_app
+    expect(response.status).to eq(202)
+    token = response.parsed_body['generation_token']
+    post path, params: current_app.merge(generation_token: token, solution: payload)
+    expect(response.status).to eq(201)
+    expect(response.parsed_body.dig('quota', 'used')).to eq(1)
+    expect(Topic.find(topic.id).custom_fields['has_blackboard_solution']).to eq(true)
+    get "/t/#{topic.id}.json"
+    expect(response.parsed_body['has_blackboard_solution']).to eq(true)
+  end
+
+  it 'frees the slot and the source lock when a generation is cancelled' do
+    group.add(user)
+    post "#{path}/generate", params: identity
+    token = response.parsed_body['generation_token']
+    post "#{path}/cancel", params: identity.merge(generation_token: token)
+    expect(response.status).to eq(200)
+    post "#{path}/generate", params: identity
+    expect(response.status).to eq(202)
+    expect(response.parsed_body['generation_token']).to be_present
+  end
+
   it 'rejects oversized text before queuing billable audio' do
     group.add(user)
     post "#{path}/generate", params: identity

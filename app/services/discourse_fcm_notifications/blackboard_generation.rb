@@ -52,6 +52,12 @@ module DiscourseFcmNotifications
       @extra_key = self.class.extra_key(user_id, now)
     end
 
+    # Redis EVAL receives keys as given, while get/zcard/exists? add the Discourse
+    # namespace. Script keys must carry it too or both sides miss each other.
+    def self.script_keys(*keys)
+      keys.map { |key| Discourse.redis.namespace_key(key) }
+    end
+
     def self.extra_key(user_id, now = Time.now.utc)
       "sorumatik:blackboard:extra:#{user_id}:#{now.utc.strftime('%Y-%m-%d')}"
     end
@@ -65,7 +71,7 @@ module DiscourseFcmNotifications
     def self.grant_reward!(user_id:, transaction_id:, now: Time.now.utc)
       reset = Time.utc(now.year, now.month, now.day) + 86_400
       result = Discourse.redis.eval(GRANT,
-        keys: [extra_key(user_id, now), "sorumatik:blackboard:ssv:#{transaction_id}"],
+        keys: script_keys(extra_key(user_id, now), "sorumatik:blackboard:ssv:#{transaction_id}"),
         argv: [rewarded_limit, reset.to_i + LEASE_SECONDS]).to_i
       case result
       when -1 then :duplicate
@@ -100,7 +106,7 @@ module DiscourseFcmNotifications
 
     def reserve
       token = "#{@user_id}:#{reset_at.to_i}:#{@api_quota ? 'api:' : ''}#{SecureRandom.hex(24)}"
-      result = Discourse.redis.eval(RESERVE, keys: [lock_key, quota_key], argv: [Time.now.to_i, daily_limit, token, LEASE_SECONDS, reset_at.to_i + LEASE_SECONDS])
+      result = Discourse.redis.eval(RESERVE, keys: self.class.script_keys(lock_key, quota_key), argv: [Time.now.to_i, daily_limit, token, LEASE_SECONDS, reset_at.to_i + LEASE_SECONDS])
       [result, result == 'owner' ? token : nil]
     end
 
@@ -115,7 +121,7 @@ module DiscourseFcmNotifications
       reserved_date = Time.at(reserved_reset - 86_400).utc.strftime('%Y-%m-%d')
       namespace = self.class.api_token?(token) ? 'apiquota' : 'quota'
       reserved_key = "sorumatik:blackboard:#{namespace}:#{@user_id}:#{reserved_date}"
-      Discourse.redis.eval(FINISH, keys: [lock_key, reserved_key], argv: [token, commit ? 'commit' : 'cancel', reserved_reset]).to_i == 1
+      Discourse.redis.eval(FINISH, keys: self.class.script_keys(lock_key, reserved_key), argv: [token, commit ? 'commit' : 'cancel', reserved_reset]).to_i == 1
     end
 
     def quota
