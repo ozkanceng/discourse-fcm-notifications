@@ -59,6 +59,16 @@ RSpec.describe DiscourseFcmNotifications::BlackboardSolutionsController do
     expect(response.parsed_body['has_blackboard_solution']).to eq(true)
   end
 
+  it 'queues the push to the asker when a solution is stored' do
+    group.add(user)
+    post "#{path}/generate", params: identity
+    token = response.parsed_body['generation_token']
+    expect_enqueued_with(job: :blackboard_owner_push) do
+      post path, params: identity.merge(generation_token: token, solution: payload)
+    end
+    expect(response.status).to eq(201)
+  end
+
   it 'frees the slot and the source lock when a generation is cancelled' do
     group.add(user)
     post "#{path}/generate", params: identity

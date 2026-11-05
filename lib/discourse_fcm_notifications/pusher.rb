@@ -154,16 +154,20 @@ module ::DiscourseFcmNotifications
       true
     end
 
-    # Sends the compact weekly study summary. The payload type is consumed by
-    # the Flutter client to open the progress screen directly.
-    def self.push_smart_recap(user, summary, locale: nil)
+    def self.language_for(user, locale = nil)
       user_locale = if user.respond_to?(:effective_locale)
                       user.effective_locale
                     elsif user.respond_to?(:user_option)
                       user.user_option&.locale
                     end
-      language = locale.to_s.presence || user_locale.to_s.presence || (SiteSetting.default_locale if defined?(SiteSetting)) || I18n.locale.to_s
-      title = case language.to_s.downcase.split('-').first
+      (locale.to_s.presence || user_locale.to_s.presence ||
+        (SiteSetting.default_locale if defined?(SiteSetting)) || I18n.locale).to_s
+    end
+
+    # Sends the compact weekly study summary. The payload type is consumed by
+    # the Flutter client to open the progress screen directly.
+    def self.push_smart_recap(user, summary, locale: nil)
+      title = case language_for(user, locale).downcase.split(/[-_]/).first
               when 'tr' then 'Haftalık çalışma özeti'
               when 'es' then 'Resumen semanal de estudio'
               when 'hi' then 'साप्ताहिक अध्ययन सारांश'
@@ -203,6 +207,34 @@ module ::DiscourseFcmNotifications
           message: message,
           url: "#{Discourse.base_url}/t/#{topic_id}",
           type: "blackboard_#{status}",
+          topic_id: topic_id,
+          deep_link: "sorumatik://t/#{topic_id}?action=blackboard",
+          group: "blackboard_#{topic_id}",
+          skip_throttle: true,
+        },
+        raise_on_transient: true
+      )
+    end
+
+    BLACKBOARD_OWNER_TEXT = {
+      'tr' => ['Sorunun video çözümü hazır 🎬', 'Kara tahtada adım adım izle.'],
+      'en' => ['Your question has a video solution 🎬', 'Watch it step by step on the blackboard.'],
+      'es' => ['Tu pregunta tiene una solución en video 🎬', 'Mírala paso a paso en la pizarra.'],
+      'hi' => ['आपके प्रश्न का वीडियो समाधान तैयार है 🎬', 'इसे ब्लैकबोर्ड पर चरण दर चरण देखें।'],
+      'id' => ['Pertanyaanmu punya solusi video 🎬', 'Tonton langkah demi langkah di papan tulis.'],
+    }.freeze
+
+    # Someone else's request gave this user's question its first video.
+    def self.push_blackboard_owner(user, topic_id:)
+      language = language_for(user).downcase.split(/[-_]/).first
+      title, message = BLACKBOARD_OWNER_TEXT[language] || BLACKBOARD_OWNER_TEXT['en']
+      self.send_notification(
+        user,
+        {
+          title: title,
+          message: message,
+          url: "#{Discourse.base_url}/t/#{topic_id}",
+          type: 'blackboard_owner_ready',
           topic_id: topic_id,
           deep_link: "sorumatik://t/#{topic_id}?action=blackboard",
           group: "blackboard_#{topic_id}",
