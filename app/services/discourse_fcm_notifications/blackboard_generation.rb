@@ -4,12 +4,18 @@ require 'securerandom'
 module DiscourseFcmNotifications
   # One atomic Redis operation reserves both source ownership and an account
   # slot. Expired reservations are refunded; completed generations last until
-  # the UTC day boundary. A replay never reserves a slot.
+  # the UTC day boundary. A replay never reserves a slot. A user can take over
+  # their own lease: a client that lost its connection could not cancel it and
+  # would otherwise be locked out of that source until the lease expires.
   class BlackboardGeneration
     LEASE_SECONDS = 600
     RESERVE = <<~LUA
       redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[1])
-      if redis.call('EXISTS', KEYS[1]) == 1 then return 'pending' end
+      local current = redis.call('GET', KEYS[1])
+      if current then
+        if string.sub(current, 1, #ARGV[6]) ~= ARGV[6] then return 'pending' end
+        redis.call('ZREM', KEYS[2], current)
+      end
       if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[2]) then return 'quota_exceeded' end
       redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[4])
       redis.call('ZADD', KEYS[2], tonumber(ARGV[1]) + tonumber(ARGV[4]), ARGV[3])
@@ -106,7 +112,7 @@ module DiscourseFcmNotifications
 
     def reserve
       token = "#{@user_id}:#{reset_at.to_i}:#{@api_quota ? 'api:' : ''}#{SecureRandom.hex(24)}"
-      result = Discourse.redis.eval(RESERVE, keys: self.class.script_keys(lock_key, quota_key), argv: [Time.now.to_i, daily_limit, token, LEASE_SECONDS, reset_at.to_i + LEASE_SECONDS])
+      result = Discourse.redis.eval(RESERVE, keys: self.class.script_keys(lock_key, quota_key), argv: [Time.now.to_i, daily_limit, token, LEASE_SECONDS, reset_at.to_i + LEASE_SECONDS, "#{@user_id}:"])
       [result, result == 'owner' ? token : nil]
     end
 
