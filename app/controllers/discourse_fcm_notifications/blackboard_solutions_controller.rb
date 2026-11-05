@@ -125,6 +125,7 @@ module DiscourseFcmNotifications
         Jobs.enqueue(:blackboard_audio, solution_id: record.id)
         mark_topic_has_solution(topic)
       end
+      notify_topic_owner(record)
       Rails.logger.info("blackboard generation_stored topic=#{topic.id} user=#{current_user.id}")
       render json: { available: true, solution: record.solution_json, quota: lease.quota }, status: :created
     rescue ActiveRecord::RecordNotUnique
@@ -312,6 +313,13 @@ module DiscourseFcmNotifications
       topic.upsert_custom_fields(BLACKBOARD_SOLUTION_FIELD => true)
     rescue StandardError => e
       Rails.logger.warn("blackboard solution flag failed topic=#{topic.id}: #{e.class}")
+    end
+
+    # Like the flag above, the push must never fail a saved solution.
+    def notify_topic_owner(record)
+      Jobs.enqueue(:blackboard_owner_push, solution_id: record.id)
+    rescue StandardError => e
+      Rails.logger.warn("blackboard owner push failed solution=#{record.id}: #{e.class}")
     end
 
     def requested_schema_version
