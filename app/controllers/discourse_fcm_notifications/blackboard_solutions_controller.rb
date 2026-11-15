@@ -61,7 +61,7 @@ module DiscourseFcmNotifications
       topic = accessible_topic
       return render json: { error: 'not_found' }, status: :not_found unless topic
 
-      previous = ready_solution(topic)
+      previous = ready_solution(topic, include_raw: false)
       digest = Digest::SHA256.hexdigest(params[:generation_token].to_s)
       if previous
         if previous.generated_by_id == current_user.id && previous.generation_digest == digest
@@ -86,17 +86,16 @@ module DiscourseFcmNotifications
       # v5 solutions carry `schema_version`; v1-v3 carry `version`.
       payload_version = (v5? ? payload['schema_version'] : payload['version']).to_i
       return render json: { error: 'invalid_solution' }, status: :unprocessable_entity unless payload_version == requested_schema_version
-      record = BlackboardSolution.new(
-        topic_id: topic.id,
-        language: language,
-        schema_version: payload_version,
-        source_fingerprint: params[:source_fingerprint],
-      )
+      fingerprint = params[:source_fingerprint].to_s
+      fingerprint = nil unless fingerprint.match?(/\A[a-f0-9]{8,128}\z/i)
+      # The text of a server job for this source is replaced by the parsed solution.
+      record = fingerprint && BlackboardSolution.find_by(topic_id: topic.id, language: language,
+        schema_version: payload_version, source_fingerprint: fingerprint, status: BlackboardSolution::RAW)
+      record ||= BlackboardSolution.new(topic_id: topic.id, language: language, schema_version: payload_version)
       source_post_id = Integer(params[:source_post_id], exception: false)
       source_post = source_post_id && topic.posts.find_by(id: source_post_id)
       record.source_post_id = source_post&.id || topic.posts.order(:post_number).last&.id
-      fingerprint = params[:source_fingerprint].to_s
-      record.source_fingerprint = fingerprint.match?(/\A[a-f0-9]{8,128}\z/i) ? fingerprint : nil
+      record.source_fingerprint = fingerprint
       # Client-supplied audio URLs are never trusted or persisted.
       payload.delete('audio')
       payload.delete('audio_tracks')
@@ -253,14 +252,27 @@ module DiscourseFcmNotifications
       request.headers['X-Sorumatik-Quota'].to_s == 'api' && SorumatikApi.configured?
     end
 
-    def ready_solution(topic)
+    # A parsed solution first; with [include_raw], else the text of a finished
+    # server job that no app has parsed and stored yet.
+    def ready_solution(topic, include_raw: raw_ok?)
+      solution = matching_solution(topic, 'ready')
+      solution ||= matching_solution(topic, BlackboardSolution::RAW) if include_raw && requested_schema_version >= 3
+      solution
+    end
+
+    # Apps that turn a server job's text into a solution themselves.
+    def raw_ok?
+      params[:raw_ok].to_s == '1'
+    end
+
+    def matching_solution(topic, status)
       if v5?
         # Only an exact source match: a different fingerprint means the
         # question, language or prompt changed.
         fingerprint = params[:source_fingerprint].to_s
         return nil if fingerprint.blank?
         return BlackboardSolution.find_by(topic_id: topic.id, language: language, schema_version: 5,
-          status: 'ready', source_fingerprint: fingerprint)
+          status: status, source_fingerprint: fingerprint)
       end
       if requested_schema_version == 3
         requested_fingerprint = params[:source_fingerprint].to_s
@@ -269,7 +281,7 @@ module DiscourseFcmNotifications
             topic_id: topic.id,
             language: language,
             schema_version: 3,
-            status: 'ready',
+            status: status,
             source_fingerprint: requested_fingerprint,
           )
           return matched if matched
@@ -278,9 +290,11 @@ module DiscourseFcmNotifications
           topic_id: topic.id,
           language: language,
           schema_version: 3,
-          status: 'ready',
+          status: status,
         ).order(created_at: :desc).first
       end
+      return nil unless status == 'ready'
+
       solution = BlackboardSolution.find_by(
         topic_id: topic.id,
         language: language,
@@ -305,8 +319,6 @@ module DiscourseFcmNotifications
       solution
     end
 
-    # Prompt 7+ is the v5 engine (kSolutionPromptVersion in the app). Older
-    # apps send 2 or 3 and never see v5 rows, which they would reject.
     # The flag only drives "video ready" buttons, so a failed write must never
     # fail a solution that is already saved.
     def mark_topic_has_solution(topic)
@@ -323,14 +335,12 @@ module DiscourseFcmNotifications
     end
 
     def requested_schema_version
-      prompt = params[:prompt_version].to_i
-      return 5 if prompt >= 7
-      prompt >= 3 ? 3 : 2
+      BlackboardSolution.schema_for_prompt(params[:prompt_version])
     end
 
     def language
       value = params[:language].to_s.downcase
-      %w[tr en es hi id].include?(value) ? value : 'tr'
+      BlackboardSolution::LANGUAGES.include?(value) ? value : 'tr'
     end
 
     def accessible_topic

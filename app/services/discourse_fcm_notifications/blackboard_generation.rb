@@ -49,7 +49,7 @@ module DiscourseFcmNotifications
     # lock is taken here; its slots go to a separate set that is never counted.
     def initialize(topic_id:, language:, version:, fingerprint:, user_id:, base_limit: nil, api_quota: false)
       @base_limit = base_limit
-      @lock_key = "sorumatik:blackboard:#{topic_id}:#{language}:#{version}:#{fingerprint}"
+      @lock_key = self.class.lock_key_for(topic_id: topic_id, language: language, version: version, fingerprint: fingerprint)
       @user_id = user_id
       now = Time.now.utc
       @reset_at = Time.utc(now.year, now.month, now.day) + 86_400
@@ -62,6 +62,17 @@ module DiscourseFcmNotifications
     # namespace. Script keys must carry it too or both sides miss each other.
     def self.script_keys(*keys)
       keys.map { |key| Discourse.redis.namespace_key(key) }
+    end
+
+    def self.lock_key_for(topic_id:, language:, version:, fingerprint:)
+      "sorumatik:blackboard:#{topic_id}:#{language}:#{version}:#{fingerprint}"
+    end
+
+    # A server job ended, so the lease its student kept for it is no longer
+    # needed; a lease another student took meanwhile stays.
+    def self.release_job_lease(user_id:, topic_id:, language:, version:, fingerprint:)
+      key = lock_key_for(topic_id: topic_id, language: language, version: version, fingerprint: fingerprint)
+      Discourse.redis.del(key) if Discourse.redis.get(key).to_s.start_with?("#{user_id}:")
     end
 
     def self.extra_key(user_id, now = Time.now.utc)
