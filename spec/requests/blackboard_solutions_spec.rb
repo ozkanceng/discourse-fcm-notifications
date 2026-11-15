@@ -69,6 +69,48 @@ RSpec.describe DiscourseFcmNotifications::BlackboardSolutionsController do
     expect(response.status).to eq(201)
   end
 
+  describe 'text of a finished server job' do
+    let(:current_app) { identity.merge(prompt_version: 6) }
+    let(:raw_text) { '{"version":3,"steps":[{"speech_text":"Bir adım."}]}' }
+    let!(:raw_record) do
+      DiscourseFcmNotifications::BlackboardSolution.create!(
+        topic_id: topic.id, language: 'tr', schema_version: 3, source_fingerprint: 'b' * 64,
+        status: 'raw', generated_by_id: Fabricate(:user).id, solution_json: { 'raw' => raw_text, 'version' => 3 },
+      )
+    end
+    before { group.add(user) }
+
+    it 'is served to apps that parse it, whatever their fingerprint' do
+      get path, params: current_app.merge(raw_ok: 1)
+      expect(response.parsed_body['available']).to eq(true)
+      expect(response.parsed_body.dig('solution', 'raw')).to eq(raw_text)
+      post "#{path}/generate", params: current_app.merge(raw_ok: 1)
+      expect(response.status).to eq(200)
+      expect(response.parsed_body.dig('solution', 'raw')).to eq(raw_text)
+    end
+
+    it 'is hidden from older apps' do
+      get path, params: current_app
+      expect(response.parsed_body['available']).to eq(false)
+    end
+
+    it 'is replaced by the parsed solution of the same source' do
+      source = current_app.merge(source_fingerprint: 'b' * 64)
+      post "#{path}/generate", params: source
+      expect(response.status).to eq(202)
+      token = response.parsed_body['generation_token']
+      post path, params: source.merge(generation_token: token, solution: payload)
+      expect(response.status).to eq(201)
+      solutions = DiscourseFcmNotifications::BlackboardSolution.where(topic_id: topic.id)
+      expect(solutions.count).to eq(1)
+      expect(solutions.first.id).to eq(raw_record.id)
+      expect(solutions.first.status).to eq('ready')
+      expect(solutions.first.solution_json['steps']).to be_present
+      get path, params: current_app.merge(raw_ok: 1)
+      expect(response.parsed_body.dig('solution', 'raw')).to be_nil
+    end
+  end
+
   it 'frees the slot and the source lock when a generation is cancelled' do
     group.add(user)
     post "#{path}/generate", params: identity

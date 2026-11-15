@@ -27,6 +27,53 @@ RSpec.describe DiscourseFcmNotifications::BlackboardJobsController do
     expect(response.status).to eq(202)
   end
 
+  describe 'model text of a ready job' do
+    fab!(:topic) { Fabricate(:topic) }
+    let(:raw) { '{"version":3,"steps":[{"speech_text":"Bir adım."}]}' }
+    let(:ready) do
+      body.merge(topic_id: topic.id, raw: raw, source_fingerprint: 'c' * 64, solution_prompt_version: 6,
+                 source_post_id: topic.first_post&.id)
+    end
+    let(:solutions) { DiscourseFcmNotifications::BlackboardSolution.where(topic_id: topic.id) }
+
+    it 'is kept for the other students of the topic' do
+      post path, params: ready, headers: headers
+      expect(response.status).to eq(202)
+      expect(solutions.count).to eq(1)
+      kept = solutions.first
+      expect(kept.status).to eq('raw')
+      expect(kept.schema_version).to eq(3)
+      expect(kept.source_fingerprint).to eq('c' * 64)
+      expect(kept.generated_by_id).to eq(user.id)
+      expect(kept.solution_json['raw']).to eq(raw)
+    end
+
+    it 'is kept once when the API repeats the report' do
+      2.times { post path, params: ready, headers: headers }
+      expect(response.status).to eq(202)
+      expect(solutions.count).to eq(1)
+    end
+
+    it "frees the lease its student kept, not another student's" do
+      lock = DiscourseFcmNotifications::BlackboardGeneration.lock_key_for(
+        topic_id: topic.id, language: 'tr', version: 3, fingerprint: 'c' * 64,
+      )
+      Discourse.redis.set(lock, "#{user.id}:1:api:x", ex: 600)
+      post path, params: ready.merge(status: 'failed').except(:raw), headers: headers
+      expect(Discourse.redis.get(lock)).to be_nil
+
+      Discourse.redis.set(lock, "#{user.id + 1}:1:x", ex: 600)
+      post path, params: ready, headers: headers
+      expect(Discourse.redis.get(lock)).to eq("#{user.id + 1}:1:x")
+    end
+
+    it 'is not kept without a source fingerprint or for a failed job' do
+      post path, params: ready.except(:source_fingerprint), headers: headers
+      post path, params: ready.merge(status: 'failed'), headers: headers
+      expect(solutions).to be_empty
+    end
+  end
+
   it 'rejects an unknown status' do
     post path, params: body.merge(status: 'running'), headers: headers
     expect(response.status).to eq(422)

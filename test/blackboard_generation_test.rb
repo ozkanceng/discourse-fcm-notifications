@@ -32,6 +32,10 @@ class FakeNamespacedRedis
     @strings.key?(namespace_key(key))
   end
 
+  def del(key)
+    @strings.delete(namespace_key(key)) ? 1 : 0
+  end
+
   def zcard(key)
     @sets[namespace_key(key)].size
   end
@@ -125,6 +129,17 @@ class BlackboardGenerationTest < Minitest::Test
   def test_same_source_waits_for_the_running_generation
     lease.reserve
     assert_equal 'pending', lease.reserve.first
+  end
+
+  def test_a_finished_job_frees_only_its_students_lease
+    generation = lease
+    generation.reserve
+    other = lease(topic_id: 2, user_id: 8)
+    other.reserve
+    Generation.release_job_lease(user_id: 7, topic_id: 1, language: 'tr', version: 3, fingerprint: 'abc')
+    Generation.release_job_lease(user_id: 7, topic_id: 2, language: 'tr', version: 3, fingerprint: 'abc')
+    refute Discourse.redis.exists?(generation.lock_key)
+    assert Discourse.redis.exists?(other.lock_key)
   end
 
   def test_commit_keeps_the_slot_and_releases_the_source
